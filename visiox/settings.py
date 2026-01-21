@@ -9,8 +9,11 @@ https://docs.djangoproject.com/en/6.0/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
-
+import os
 from pathlib import Path
+
+import dotenv
+dotenv.load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -38,6 +41,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'core',
+    'authentication',
 ]
 
 MIDDLEWARE = [
@@ -75,9 +79,21 @@ WSGI_APPLICATION = 'visiox.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.getenv('DATABASE_NAME'),
+        'USER': os.getenv('DATABASE_USER'),
+        'PASSWORD': os.getenv('DATABASE_PASSWORD'),
+        'HOST': os.getenv('DATABASE_HOST'),
+        'PORT': os.getenv('DATABASE_PORT'),
+    },
+    'vector': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.getenv('VECTOR_DATABASE_NAME'),
+        'USER': os.getenv('VECTOR_DATABASE_USER'),
+        'PASSWORD': os.getenv('VECTOR_DATABASE_PASSWORD'),
+        'HOST': os.getenv('VECTOR_DATABASE_HOST'),
+        'PORT': os.getenv('VECTOR_DATABASE_PORT'), 
+    },
 }
 
 
@@ -105,7 +121,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'UTC+7'
 
 USE_I18N = True
 
@@ -116,3 +132,5 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+AUTH_USER_MODEL = 'core.UserModel'
