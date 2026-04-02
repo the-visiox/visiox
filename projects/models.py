@@ -20,8 +20,10 @@ class Project(models.Model):
         related_name='projects'
     )
     owner = models.ForeignKey(
-        'core.models.UserModel',
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name='owned_projects'
     )
     name = models.CharField(max_length=255)

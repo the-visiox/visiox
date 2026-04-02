@@ -48,7 +48,7 @@ class Annotation(models.Model):
         related_name='annotations'
     )
     annotator = models.ForeignKey(
-        'core.models.UserModel',
+        settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         related_name='annotations'

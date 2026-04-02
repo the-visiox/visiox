@@ -13,7 +13,7 @@ from projects.filters import ProjectFilter
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
-    
+    queryset = Project.objects.none()
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = ProjectFilter

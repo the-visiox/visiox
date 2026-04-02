@@ -1,11 +1,15 @@
+from drf_spectacular.utils import extend_schema
 from rest_framework import views, response, status
+
 from authentication.serializers import LoginSerializer
 from authentication.services import AuthenticationService
 
 class LoginView(views.APIView):
     permission_classes = []
     authentication_classes = []
-    
+    serializer_class = LoginSerializer
+
+    @extend_schema(request=LoginSerializer, responses={200: dict})
     def post(self, request):
         login_serializer = LoginSerializer(data=request.data)
         if not login_serializer.is_valid():

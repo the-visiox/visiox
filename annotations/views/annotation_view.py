@@ -1,0 +1,52 @@
+from django.utils import timezone
+from drf_spectacular.utils import extend_schema
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
+from annotations.models import Annotation
+from annotations.serializers import AnnotationSerializer, BulkAnnotationSerializer
+
+
+class AnnotationViewSet(viewsets.ModelViewSet):
+    serializer_class = AnnotationSerializer
+    queryset = Annotation.objects.none()
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Annotation.objects.filter(
+            media__dataset__project__team__members__user=user
+        ).distinct().select_related('class_label', 'annotator', 'media')
+
+        media_id = self.request.query_params.get('media')
+        if media_id:
+            qs = qs.filter(media_id=media_id)
+
+        ann_type = self.request.query_params.get('type')
+        if ann_type:
+            qs = qs.filter(type=ann_type)
+
+        return qs
+
+    @extend_schema(request=BulkAnnotationSerializer, responses={201: AnnotationSerializer(many=True)})
+    @action(detail=False, methods=['post'], url_path='bulk')
+    def bulk_create(self, request):
+        serializer = BulkAnnotationSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        created = serializer.save()
+        return Response(
+            AnnotationSerializer(created, many=True).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(responses={204: None})
+    @action(detail=False, methods=['delete'], url_path='bulk-delete')
+    def bulk_delete(self, request):
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({'error': 'ids list required.'}, status=status.HTTP_400_BAD_REQUEST)
+        Annotation.objects.filter(
+            id__in=ids,
+            media__dataset__project__team__members__user=request.user,
+        ).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
