@@ -1,13 +1,13 @@
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework import exceptions 
+from rest_framework.exceptions import AuthenticationFailed 
 
 class AuthenticationService:
     @classmethod
     def login(cls, username: str, password: str):
         user = authenticate(username=username, password=password)
         if not user:
-            raise exceptions.AuthenticationFailed()
+            raise AuthenticationFailed()
         
         access_token, refresh_token = cls.generate_token(user)
         return {

@@ -1,4 +1,5 @@
 from django.db import models
+from django.conf import settings
 
 
 class Project(models.Model):
@@ -17,6 +18,11 @@ class Project(models.Model):
         'teams.Team',
         on_delete=models.CASCADE,
         related_name='projects'
+    )
+    owner = models.ForeignKey(
+        'core.models.UserModel',
+        on_delete=models.CASCADE,
+        related_name='owned_projects'
     )
     name = models.CharField(max_length=255)
     task_type = models.CharField(max_length=100, choices=TASK_TYPE_CHOICES)
