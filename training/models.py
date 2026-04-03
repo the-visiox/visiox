@@ -55,6 +55,10 @@ class TrainingJob(models.Model):
     class Meta:
         db_table = 'training_jobs'
         ordering = ['-created_at']
+        permissions = [
+            ('start_job', 'Can start a training job'),
+            ('stop_job', 'Can stop a training job'),
+        ]
 
     def __str__(self):
         return f"{self.name} [{self.status}]"

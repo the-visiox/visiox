@@ -6,6 +6,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.db.models import Q
 
+from core.permissions import HasPerm
 from projects.models import Project
 from projects.serializers import ProjectSerializer, ProjectCreateSerializer
 from projects.permissions import IsProjectOwnerOrTeamAdmin, IsProjectOwnerOrTeamOwner
@@ -20,12 +21,12 @@ class ProjectViewSet(viewsets.ModelViewSet):
     search_fields = ['name', 'description']
     ordering_fields = ['created_at', 'updated_at', 'name']
     ordering = ['-created_at']
-    
+
     def get_permissions(self):
-        if self.action in ['update', 'partial_update']:
-            return [IsAuthenticated(), IsProjectOwnerOrTeamAdmin()]
-        elif self.action == 'destroy':
-            return [IsAuthenticated(), IsProjectOwnerOrTeamOwner()]
+        if self.action in ('update', 'partial_update'):
+            return [HasPerm('projects.change_project'), IsProjectOwnerOrTeamAdmin()]
+        if self.action == 'destroy':
+            return [HasPerm('projects.delete_project'), IsProjectOwnerOrTeamOwner()]
         return [IsAuthenticated()]
     
     def get_queryset(self):

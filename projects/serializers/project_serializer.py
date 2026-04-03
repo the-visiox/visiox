@@ -8,7 +8,8 @@ class ProjectSerializer(serializers.ModelSerializer):
     team_name = serializers.CharField(source='team.name', read_only=True)
     owner_username = serializers.CharField(source='owner.username', read_only=True)
     owner_email = serializers.EmailField(source='owner.email', read_only=True)
-    
+    thumbnail = serializers.SerializerMethodField()
+
     class Meta:
         model = Project
         fields = [
@@ -21,10 +22,26 @@ class ProjectSerializer(serializers.ModelSerializer):
             'name',
             'task_type',
             'description',
+            'thumbnail',
             'created_at',
             'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'team_name', 'owner', 'owner_username', 'owner_email']
+
+    def get_thumbnail(self, obj) -> str | None:
+        from datasets.models import Media
+        first = (
+            Media.objects
+            .filter(dataset__project=obj, type='image')
+            .order_by('uploaded_at')
+            .first()
+        )
+        if not first or not first.file:
+            return None
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(first.file.url)
+        return first.file.url
 
 
 class ProjectCreateSerializer(serializers.ModelSerializer):

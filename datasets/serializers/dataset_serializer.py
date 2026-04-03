@@ -30,11 +30,21 @@ class MediaUploadSerializer(serializers.Serializer):
 
 class DatasetSerializer(serializers.ModelSerializer):
     media_count = serializers.SerializerMethodField()
+    thumbnail = serializers.SerializerMethodField()
 
     class Meta:
         model = Dataset
-        fields = ['id', 'project', 'name', 'description', 'version', 'media_count', 'created_at', 'updated_at']
+        fields = ['id', 'project', 'name', 'description', 'version', 'media_count', 'thumbnail', 'created_at', 'updated_at']
         read_only_fields = ['id', 'version', 'created_at', 'updated_at']
 
     def get_media_count(self, obj) -> int:
         return obj.media_files.count()
+
+    def get_thumbnail(self, obj) -> str | None:
+        first = obj.media_files.filter(type='image').order_by('uploaded_at').first()
+        if not first or not first.file:
+            return None
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(first.file.url)
+        return first.file.url

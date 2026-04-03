@@ -1,12 +1,13 @@
 from drf_spectacular.utils import extend_schema
 from rest_framework import views, response, status
+from rest_framework.permissions import AllowAny
 
 from authentication.serializers import RegisterSerializer
 from authentication.services import AuthenticationService
 
 
 class RegisterView(views.APIView):
-    permission_classes = []
+    permission_classes = [AllowAny]
     authentication_classes = []
     serializer_class = RegisterSerializer
 

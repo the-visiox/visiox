@@ -62,6 +62,10 @@ class InferenceEndpoint(models.Model):
     class Meta:
         db_table = 'inference_endpoints'
         ordering = ['-created_at']
+        permissions = [
+            ('start_endpoint', 'Can start an inference endpoint'),
+            ('stop_endpoint', 'Can stop an inference endpoint'),
+        ]
 
     def save(self, *args, **kwargs):
         if not self.auth_token:

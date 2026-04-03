@@ -47,6 +47,12 @@ class TeamMember(models.Model):
         db_table = 'team_members'
         unique_together = ['team', 'user']
         ordering = ['-joined_at']
+        permissions = [
+            ('invite_member', 'Can invite team members'),
+            ('remove_member', 'Can remove team members'),
+            ('update_member_role', 'Can update member roles'),
+            ('delete_team', 'Can delete a team'),
+        ]
 
     def __str__(self):
         return f"{self.user.username} - {self.team.name} ({self.role})"

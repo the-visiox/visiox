@@ -1,5 +1,5 @@
 from django.contrib.auth import authenticate, get_user_model
-from rest_framework.exceptions import AuthenticationFailed, ValidationError
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
@@ -7,8 +7,29 @@ User = get_user_model()
 
 class AuthenticationService:
     @classmethod
+    def _resolve_username_for_login(cls, identifier: str) -> str | None:
+        """
+        Django's authenticate() looks up by User.username only. Allow login with
+        email when it matches a unique user (common UX; frontend often sends email
+        in the 'username' field).
+        """
+        identifier = (identifier or "").strip()
+        if not identifier:
+            return None
+        by_username = User.objects.filter(username__iexact=identifier).first()
+        if by_username:
+            return by_username.username
+        by_email = User.objects.filter(email__iexact=identifier)
+        if by_email.count() == 1:
+            return by_email.first().username
+        return identifier
+
+    @classmethod
     def login(cls, username: str, password: str):
-        user = authenticate(username=username, password=password)
+        resolved = cls._resolve_username_for_login(username)
+        if not resolved:
+            raise AuthenticationFailed("Invalid username or password.")
+        user = authenticate(username=resolved, password=password)
         if not user:
             raise AuthenticationFailed("Invalid username or password.")
 

@@ -36,10 +36,12 @@ INSTALLED_APPS = [
     'deployments',
     'billing',
     'silk',
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -161,6 +163,24 @@ if USE_S3:
 # Stripe
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
+
+# CORS
+CORS_ALLOWED_ORIGINS = os.getenv(
+    'CORS_ALLOWED_ORIGINS',
+    'http://localhost:3000,http://127.0.0.1:3000',
+).split(',')
+CORS_ALLOW_CREDENTIALS = True
+
+# CSRF — required for cross-origin browser requests when using SessionMiddleware + cookies;
+# also list API origin if frontend posts to a different port (e.g. :3000 → :8080).
+CSRF_TRUSTED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        'CSRF_TRUSTED_ORIGINS',
+        'http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080',
+    ).split(',')
+    if o.strip()
+]
 
 # Django Silk — request/query profiler (only active when DEBUG=True)
 SILKY_PYTHON_PROFILER = True

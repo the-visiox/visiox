@@ -4,6 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 
+from core.permissions import HasPerm
 from training.models import ModelArchitecture, TrainingJob, Experiment, RunMetric
 from training.serializers import (
     ModelArchitectureSerializer,
@@ -33,6 +34,11 @@ class TrainingJobViewSet(viewsets.ModelViewSet):
         return TrainingJob.objects.filter(
             project__team__members__user=user
         ).distinct().select_related('architecture', 'created_by', 'project', 'dataset')
+
+    def get_permissions(self):
+        if self.action in ('start', 'stop'):
+            return [HasPerm('training.start_job')]
+        return super().get_permissions()
 
     @extend_schema(responses={200: TrainingJobSerializer})
     @action(detail=True, methods=['post'])

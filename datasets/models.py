@@ -16,6 +16,10 @@ class Dataset(models.Model):
     class Meta:
         db_table = 'datasets'
         ordering = ['-created_at']
+        permissions = [
+            ('upload_media', 'Can upload media to a dataset'),
+            ('export_dataset', 'Can export a dataset'),
+        ]
 
     def __str__(self):
         return f"{self.name} v{self.version} - {self.project.name}"

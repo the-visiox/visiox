@@ -1,10 +1,13 @@
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers, views, response, status
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 class LogoutView(views.APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
     @extend_schema(
         request=inline_serializer('LogoutRequest', fields={'refresh_token': serializers.CharField()}),
         responses={204: None},

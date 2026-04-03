@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
+from core.permissions import HasPerm
 from deployments.models import ModelRegistry, InferenceEndpoint, MonitoringLog, DriftAlert
 from deployments.serializers import (
     ModelRegistrySerializer,
@@ -51,6 +52,13 @@ class InferenceEndpointViewSet(viewsets.ModelViewSet):
         return InferenceEndpoint.objects.filter(
             registry_entry__training_job__project__team__members__user=self.request.user
         ).distinct().select_related('registry_entry', 'created_by')
+
+    def get_permissions(self):
+        if self.action == 'start':
+            return [HasPerm('deployments.start_endpoint')]
+        if self.action == 'stop':
+            return [HasPerm('deployments.stop_endpoint')]
+        return super().get_permissions()
 
     @extend_schema(responses={200: InferenceEndpointSerializer})
     @action(detail=True, methods=['post'])

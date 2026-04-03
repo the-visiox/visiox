@@ -1,0 +1,131 @@
+from django.contrib.auth.models import Group, Permission
+from django.contrib.contenttypes.models import ContentType
+from django.core.management.base import BaseCommand
+
+
+ROLE_PERMISSION_MAP = {
+    'role_owner': [
+        # Team management
+        'teams.delete_team',
+        'teams.invite_member',
+        'teams.remove_member',
+        'teams.update_member_role',
+        # Datasets
+        'datasets.add_dataset',
+        'datasets.change_dataset',
+        'datasets.delete_dataset',
+        'datasets.view_dataset',
+        'datasets.upload_media',
+        'datasets.export_dataset',
+        # Annotations
+        'annotations.add_annotation',
+        'annotations.change_annotation',
+        'annotations.delete_annotation',
+        'annotations.view_annotation',
+        'annotations.review_annotation',
+        'annotations.approve_annotation',
+        # Training
+        'training.add_trainingjob',
+        'training.change_trainingjob',
+        'training.view_trainingjob',
+        'training.start_job',
+        'training.stop_job',
+        # Deployments
+        'deployments.add_inferenceendpoint',
+        'deployments.change_inferenceendpoint',
+        'deployments.view_inferenceendpoint',
+        'deployments.start_endpoint',
+        'deployments.stop_endpoint',
+    ],
+    'role_admin': [
+        # Team management (no delete_team)
+        'teams.invite_member',
+        'teams.remove_member',
+        'teams.update_member_role',
+        # Datasets
+        'datasets.add_dataset',
+        'datasets.change_dataset',
+        'datasets.delete_dataset',
+        'datasets.view_dataset',
+        'datasets.upload_media',
+        'datasets.export_dataset',
+        # Annotations
+        'annotations.add_annotation',
+        'annotations.change_annotation',
+        'annotations.delete_annotation',
+        'annotations.view_annotation',
+        'annotations.review_annotation',
+        'annotations.approve_annotation',
+        # Training
+        'training.add_trainingjob',
+        'training.change_trainingjob',
+        'training.view_trainingjob',
+        'training.start_job',
+        'training.stop_job',
+        # Deployments
+        'deployments.add_inferenceendpoint',
+        'deployments.change_inferenceendpoint',
+        'deployments.view_inferenceendpoint',
+        'deployments.start_endpoint',
+        'deployments.stop_endpoint',
+    ],
+    'role_member': [
+        # Datasets
+        'datasets.add_dataset',
+        'datasets.change_dataset',
+        'datasets.view_dataset',
+        'datasets.upload_media',
+        'datasets.export_dataset',
+        # Annotations
+        'annotations.add_annotation',
+        'annotations.change_annotation',
+        'annotations.view_annotation',
+        # Training
+        'training.add_trainingjob',
+        'training.view_trainingjob',
+        'training.start_job',
+        'training.stop_job',
+        # Deployments (view only)
+        'deployments.view_inferenceendpoint',
+    ],
+    'role_viewer': [
+        # Read-only access
+        'datasets.view_dataset',
+        'annotations.view_annotation',
+        'training.view_trainingjob',
+        'deployments.view_inferenceendpoint',
+    ],
+}
+
+
+def _get_permission(app_label: str, codename: str) -> Permission | None:
+    return Permission.objects.filter(
+        content_type__app_label=app_label, codename=codename
+    ).first()
+
+
+class Command(BaseCommand):
+    help = 'Create role_* Groups and assign the correct permissions (idempotent).'
+
+    def handle(self, *args, **options):
+        for group_name, dotted_perms in ROLE_PERMISSION_MAP.items():
+            group, created = Group.objects.get_or_create(name=group_name)
+            action = 'Created' if created else 'Updated'
+
+            perms = []
+            missing = []
+            for dotted in dotted_perms:
+                app_label, codename = dotted.split('.', 1)
+                perm = _get_permission(app_label, codename)
+                if perm:
+                    perms.append(perm)
+                else:
+                    missing.append(dotted)
+
+            group.permissions.set(perms)
+
+            self.stdout.write(
+                self.style.SUCCESS(f'{action} group "{group_name}" with {len(perms)} permission(s).')
+            )
+            for m in missing:
+                self.stdout.write(self.style.WARNING(f'  Permission not found (run migrate first): {m}'))

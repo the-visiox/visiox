@@ -62,6 +62,10 @@ class Annotation(models.Model):
     class Meta:
         db_table = 'annotations'
         ordering = ['-created_at']
+        permissions = [
+            ('review_annotation', 'Can review annotations'),
+            ('approve_annotation', 'Can approve annotations'),
+        ]
 
     def __str__(self):
         return f"{self.type} - {self.class_label.name} on {self.media.id}"

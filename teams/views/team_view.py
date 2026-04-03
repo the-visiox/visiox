@@ -2,8 +2,9 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from core.permissions import HasPerm
 from teams.models import Team, TeamMember
-from teams.permissions import IsTeamOwnerOrAdmin, IsTeamMember
+from teams.permissions import IsTeamOwnerOrAdmin
 from teams.serializers import (
     TeamSerializer,
     TeamMemberSerializer,
@@ -21,8 +22,12 @@ class TeamViewSet(viewsets.ModelViewSet):
         return Team.objects.filter(members__user=user).distinct()
 
     def get_permissions(self):
-        if self.action in ('update', 'partial_update', 'destroy'):
-            return [IsTeamOwnerOrAdmin()]
+        if self.action == 'destroy':
+            return [HasPerm('teams.delete_team'), IsTeamOwnerOrAdmin()]
+        if self.action in ('update', 'partial_update'):
+            return [HasPerm('teams.update_member_role'), IsTeamOwnerOrAdmin()]
+        if self.action in ('invite', 'remove_member', 'update_member_role'):
+            return [HasPerm('teams.invite_member'), IsTeamOwnerOrAdmin()]
         return super().get_permissions()
 
     @action(detail=True, methods=['get'])

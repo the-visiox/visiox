@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
+from core.permissions import HasPerm
 from datasets.models import Dataset, Media
 from datasets.serializers import DatasetSerializer, MediaSerializer, MediaUploadSerializer
 
@@ -27,6 +28,13 @@ class DatasetViewSet(viewsets.ModelViewSet):
         return Dataset.objects.filter(
             project__team__members__user=user
         ).distinct().select_related('project')
+
+    def get_permissions(self):
+        if self.action == 'destroy':
+            return [HasPerm('datasets.delete_dataset')]
+        if self.action == 'upload':
+            return [HasPerm('datasets.upload_media')]
+        return super().get_permissions()
 
     def perform_create(self, serializer):
         serializer.save()

@@ -18,8 +18,3 @@ class IsTeamOwnerOrAdmin(BasePermission):
         return role in ('owner', 'admin')
 
 
-class IsTeamMember(BasePermission):
-    """Allow any team member (including viewers)."""
-
-    def has_object_permission(self, request, view, obj):
-        return get_member_role(obj, request.user) is not None
