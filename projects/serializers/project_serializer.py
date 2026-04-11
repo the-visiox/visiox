@@ -23,6 +23,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             'task_type',
             'description',
             'thumbnail',
+            'cvat_project_id',
             'created_at',
             'updated_at'
         ]

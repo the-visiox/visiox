@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'billing',
     'silk',
     'corsheaders',
+    'django_celery_beat',
 ]
 
 MIDDLEWARE = [
@@ -164,11 +165,16 @@ if USE_S3:
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
 
-# CORS
-CORS_ALLOWED_ORIGINS = os.getenv(
-    'CORS_ALLOWED_ORIGINS',
-    'http://localhost:3000,http://127.0.0.1:3000',
-).split(',')
+# CORS — include :3001 because Next.js often falls back when :3000 is busy.
+CORS_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:3000,http://127.0.0.1:3000,'
+        'http://localhost:3001,http://127.0.0.1:3001',
+    ).split(',')
+    if o.strip()
+]
 CORS_ALLOW_CREDENTIALS = True
 
 # CSRF — required for cross-origin browser requests when using SessionMiddleware + cookies;
@@ -177,10 +183,19 @@ CSRF_TRUSTED_ORIGINS = [
     o.strip()
     for o in os.getenv(
         'CSRF_TRUSTED_ORIGINS',
-        'http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080,http://127.0.0.1:8080',
+        'http://localhost:3000,http://127.0.0.1:3000,'
+        'http://localhost:3001,http://127.0.0.1:3001,'
+        'http://localhost:8080,http://127.0.0.1:8080',
     ).split(',')
     if o.strip()
 ]
+
+# CVAT Integration
+CVAT_INTERNAL_HOST = os.getenv('CVAT_HOST', 'http://localhost:8080')
+CVAT_PUBLIC_URL = os.getenv('CVAT_PUBLIC_URL', 'http://localhost:8080')
+CVAT_USERNAME = os.getenv('CVAT_USERNAME', 'admin')
+CVAT_PASSWORD = os.getenv('CVAT_PASSWORD', 'master123')
+CVAT_WEBHOOK_URL = os.getenv('CVAT_WEBHOOK_URL', 'http://host.docker.internal:8000/api/datasets/cvat-webhook/')
 
 # Django Silk — request/query profiler (only active when DEBUG=True)
 SILKY_PYTHON_PROFILER = True

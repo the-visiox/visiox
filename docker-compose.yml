@@ -3,23 +3,29 @@ version: '3.9'
 services:
   db:
     image: postgres:16-alpine
+    container_name: visiox_db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DATABASE_NAME:-visiox}
+      POSTGRES_DB: ${DATABASE_NAME:-visiox_db}
       POSTGRES_USER: ${DATABASE_USER:-postgres}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-postgres}
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./db/init-cvat.sql:/docker-entrypoint-initdb.d/init-cvat.sql:ro
     ports:
-      - "${DB_HOST_PORT:-5433}:5432"
+      - "${DB_HOST_PORT:-5432}:5432"
+    networks:
+      - default
+      - shared_db
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-postgres} -d ${DATABASE_NAME:-visiox_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.2.11-alpine
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -42,8 +48,16 @@ services:
       - .env
     environment:
       DATABASE_HOST: db
+      DATABASE_PORT: 5432
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      CVAT_HOST: http://cvat_server:8080
+      CVAT_PUBLIC_URL: ${CVAT_PUBLIC_URL:-http://localhost:8080}
+      CVAT_WEBHOOK_URL: ${CVAT_WEBHOOK_URL:-http://visiox-api-1:8000/api/datasets/cvat-webhook/}
+    networks:
+      - default
+      - shared_db
+      - cvat_cvat
     depends_on:
       db:
         condition: service_healthy
@@ -61,8 +75,16 @@ services:
       - .env
     environment:
       DATABASE_HOST: db
+      DATABASE_PORT: 5432
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      CVAT_HOST: http://cvat_server:8080
+      CVAT_PUBLIC_URL: ${CVAT_PUBLIC_URL:-http://localhost:8080}
+      CVAT_WEBHOOK_URL: ${CVAT_WEBHOOK_URL:-http://visiox-api-1:8000/api/datasets/cvat-webhook/}
+    networks:
+      - default
+      - shared_db
+      - cvat_cvat
     depends_on:
       db:
         condition: service_healthy
@@ -79,6 +101,7 @@ services:
       - .env
     environment:
       DATABASE_HOST: db
+      DATABASE_PORT: 5432
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     depends_on:
@@ -90,3 +113,10 @@ services:
 volumes:
   postgres_data:
   media_files:
+
+networks:
+  shared_db:
+    external: true
+  cvat_cvat:
+    external: true
+    name: cvat_cvat

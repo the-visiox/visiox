@@ -34,8 +34,8 @@ class DatasetSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Dataset
-        fields = ['id', 'project', 'name', 'description', 'version', 'media_count', 'thumbnail', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'version', 'created_at', 'updated_at']
+        fields = ['id', 'project', 'name', 'description', 'version', 'media_count', 'thumbnail', 'cvat_task_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'version', 'cvat_task_id', 'created_at', 'updated_at']
 
     def get_media_count(self, obj) -> int:
         return obj.media_files.count()
