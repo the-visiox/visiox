@@ -1,11 +1,10 @@
 {
-	"folders": [
-		{
-			"path": "."
-		},
-		{
-			"path": "../visiox-ui"
-		}
-	],
-	"settings": {}
+    "folders": [
+        {
+            "path": "../visiox-ui"
+        },
+        {
+            "path": "."
+        }
+    ]
 }

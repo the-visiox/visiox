@@ -13,6 +13,23 @@ This is the **Django REST backend** for the VisioX computer-vision platform. It 
 | CVAT SDK | cvat-sdk 2.25.0 |
 | Dev server | `python manage.py runserver 0.0.0.0:8000` |
 | Docker | `docker compose up -d` |
+| Python (local) | 3.12+; Conda env example: `conda activate py312` |
+
+## Local development (without the `api` container)
+
+1. Copy `env.example` → `.env` and set `DATABASE_*`, `CELERY_*` to match your Postgres and Redis.
+2. **Docker DB/Redis only** (common on dev machines): `docker compose up -d db redis` then run Django on the host with the same `.env`.
+3. **Windows + Docker Postgres on the same machine**: if a **native PostgreSQL** install is already bound to `127.0.0.1:5432`, Django will talk to that instance first—not the container. Either stop the local service or map Docker’s DB to another host port and point Django at it:
+   - In `.env`: set `DB_HOST_PORT=5433` (compose host mapping) and `DATABASE_PORT=5433` (what Django/psycopg2 uses when `DATABASE_HOST=127.0.0.1`).
+   - Recreate the `db` container after changing `DB_HOST_PORT` so the new mapping applies.
+4. Default DB credentials in `env.example` / typical local compose: user `postgres`, password `postgres`, database name from `DATABASE_NAME` (e.g. `visiox_db`). Change these in production.
+
+Example host-only API after DB is reachable:
+
+```bash
+python manage.py migrate
+python manage.py runserver 0.0.0.0:8000
+```
 
 ## Architecture
 
@@ -63,7 +80,9 @@ billing/                # Stripe, API keys
 | `api` | 8000 | Django dev server |
 | `worker` | — | Celery worker |
 | `beat` | — | Celery beat scheduler |
-| `db` | 5432 | PostgreSQL (shared with CVAT) |
+| `db` | `${DB_HOST_PORT:-5432}` → `5432` in container | PostgreSQL (host port configurable in `.env`; container always listens on `5432`) |
 | `redis` | 6379 | Celery broker |
 
 Networks: `shared_db` (database), `cvat_cvat` (CVAT services).
+
+When the stack runs **only** `db` + `redis`, set `DATABASE_HOST=127.0.0.1` (or `localhost`) and `DATABASE_PORT` to the **published** host port so Django on the host reaches the container.

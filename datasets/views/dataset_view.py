@@ -1,3 +1,4 @@
+import json
 import logging
 
 from rest_framework import viewsets, status
@@ -41,6 +42,30 @@ def _extract_image_dimensions(file):
         return None, None
 
 
+def _push_new_images_to_cvat_if_task_empty(dataset: Dataset, image_paths: list[str]) -> None:
+    """Send images to CVAT only while the task has no frames (CVAT allows one data upload)."""
+    if not image_paths or not dataset.cvat_task_id:
+        return
+    try:
+        stats = get_cvat_task_stats(dataset.cvat_task_id)
+        if not stats.get('exists'):
+            return
+        if int(stats.get('size') or 0) != 0:
+            logger.info(
+                'CVAT task %d already has frames; %d file(s) kept in VisioX media only',
+                dataset.cvat_task_id,
+                len(image_paths),
+            )
+            return
+        upload_cvat_data(dataset.cvat_task_id, image_paths)
+    except Exception:
+        logger.exception(
+            'Failed to upload %d image(s) to CVAT task %d',
+            len(image_paths),
+            dataset.cvat_task_id,
+        )
+
+
 class DatasetViewSet(viewsets.ModelViewSet):
     serializer_class = DatasetSerializer
     queryset = Dataset.objects.none()
@@ -57,7 +82,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return [AllowAny()]
         if self.action == 'destroy':
             return [HasPerm('datasets.delete_dataset')]
-        if self.action == 'upload':
+        if self.action in ('upload', 'upload_batch'):
             return [HasPerm('datasets.upload_media')]
         return super().get_permissions()
 
@@ -178,14 +203,69 @@ class DatasetViewSet(viewsets.ModelViewSet):
             metadata=metadata,
         )
 
-        if media_type == 'image' and dataset.cvat_task_id:
-            try:
-                upload_cvat_data(dataset.cvat_task_id, media.file.path)
-            except Exception:
-                logger.exception('Failed to upload media %d to CVAT task %d', media.id, dataset.cvat_task_id)
+        if media_type == 'image':
+            _push_new_images_to_cvat_if_task_empty(dataset, [media.file.path])
 
         return Response(
             MediaSerializer(media, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(
+        detail=True,
+        methods=['post'],
+        parser_classes=[MultiPartParser, FormParser],
+        url_path='upload-batch',
+    )
+    def upload_batch(self, request, pk=None):
+        """Upload many files in one request. Images are pushed to CVAT in a single batch if the task is still empty."""
+        dataset = self.get_object()
+        files = request.FILES.getlist('files')
+        if not files:
+            return Response({'detail': 'No files provided. Use form field "files".'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(files) > 100:
+            return Response({'detail': 'Maximum 100 files per request.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        media_type = request.data.get('type', 'image')
+        if media_type not in ('image', 'video'):
+            return Response({'detail': 'type must be "image" or "video".'}, status=status.HTTP_400_BAD_REQUEST)
+
+        metadata_raw = request.data.get('metadata')
+        metadata = {}
+        if metadata_raw not in (None, ''):
+            try:
+                metadata = json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
+                if not isinstance(metadata, dict):
+                    metadata = {}
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+
+        created = []
+        image_paths: list[str] = []
+        for uploaded_file in files:
+            width, height = None, None
+            if media_type == 'image':
+                width, height = _extract_image_dimensions(uploaded_file)
+
+            media = Media.objects.create(
+                dataset=dataset,
+                type=media_type,
+                file=uploaded_file,
+                original_filename=uploaded_file.name,
+                width=width,
+                height=height,
+                file_size=uploaded_file.size,
+                metadata=metadata,
+            )
+            created.append(media)
+            if media_type == 'image':
+                image_paths.append(media.file.path)
+
+        if media_type == 'image':
+            _push_new_images_to_cvat_if_task_empty(dataset, image_paths)
+
+        return Response(
+            MediaSerializer(created, many=True, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
         )
 
