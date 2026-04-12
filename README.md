@@ -1,136 +1,103 @@
 ## VisioX Backend
 
-Backend API for the VisioX computer vision platform, built with Django + Django REST Framework.
+Django + Django REST Framework API for the VisioX computer vision platform: teams, projects, datasets, media upload, **annotations**, labeling jobs, training, deployments, billing, and OpenAPI docs.
 
 ## Requirements
 
 - Python 3.12+ (recommended)
 - PostgreSQL 16+
-- Redis 7+ (for Celery)
-- `pip` and virtual environment support
+- Redis 7+ (Celery broker / cache)
+- `pip` and a virtual environment
 
-## 1) Local Setup (without Docker)
+## Database host: Docker vs local CLI
 
-1. Clone repo and move to project folder:
+- **`DATABASE_HOST=db`** resolves only **inside** Docker Compose (service name). Running `python manage.py` **on your PC** (Windows/macOS/Linux) must use **`localhost`** (or `127.0.0.1`).
+- Compose maps Postgres to host port **`5433`** by default (`DB_HOST_PORT`, see `docker-compose.yml`). From the host, use `DATABASE_PORT=5433` when talking to the containerized DB. Use **`5432`** if PostgreSQL is installed natively on the machine.
 
-```bash
-git clone <your-repo-url>
-cd visiox
-```
-
-2. Create and activate virtual environment:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-3. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-4. Create environment file:
-
-```bash
-cp env.example .env
-```
-
-5. Update `.env` values for your local PostgreSQL/Redis setup.
-
-Example minimal config:
+Example **host** `.env` when DB runs in Docker:
 
 ```env
 DATABASE_NAME=visiox_db
 DATABASE_USER=postgres
 DATABASE_PASSWORD=postgres
 DATABASE_HOST=localhost
-DATABASE_PORT=5432
+DATABASE_PORT=5433
 
-CELERY_BROKER_URL=redis://localhost:6379/0
-CELERY_RESULT_BACKEND=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
 ```
 
-6. Run migrations:
+Inside containers, Compose overrides `DATABASE_HOST` to `db` where needed.
+
+## 1) Local setup (without Docker)
 
 ```bash
+cd visiox
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Unix: source .venv/bin/activate
+pip install -r requirements.txt
+cp env.example .env
+# Edit .env: localhost + correct DATABASE_PORT (5432 or 5433)
 python manage.py migrate
-```
-
-7. Create role groups and seed demo data (optional but recommended):
-
-```bash
 python manage.py setup_groups
 python manage.py seed_demo_data
-```
-
-8. Start API server:
-
-```bash
 python manage.py runserver 0.0.0.0:8000
 ```
 
-## 2) Docker Setup (recommended)
-
-1. Create `.env` from example:
+## 2) Docker setup
 
 ```bash
-cp env.example .env
-```
-
-2. Start services:
-
-```bash
-docker compose up --build
-```
-
-This starts:
-- `db` (PostgreSQL)
-- `redis`
-- `api` (Django at port `8000`)
-- `worker` (Celery worker)
-- `beat` (Celery beat)
-
-3. Run migrations and seed (from another terminal):
-
-```bash
+docker compose up --build -d db redis
 docker compose exec api python manage.py migrate
 docker compose exec api python manage.py setup_groups
 docker compose exec api python manage.py seed_demo_data
 ```
 
-## API Endpoints
+Or bring up the full stack (`api`, `worker`, `beat`) per `docker-compose.yml`.
 
-- API base: `http://localhost:8000/api/`
-- Swagger docs: `http://localhost:8000/api/docs/`
+## API surface (selected)
+
+| Area | Base path |
+|------|-----------|
+| Auth (JWT) | `/api/auth/` — `login`, `register`, `token/refresh`, `logout` |
+| Teams / projects / datasets | `/api/teams/`, `/api/projects/`, `/api/datasets/` |
+| Classes (labels) | `/api/classes/?project=<id>` |
+| Annotations (CRUD, bulk) | `/api/annotations/` |
+| **Jobs** (alias for labeling tasks) | `/api/jobs/` — same viewset as `/api/tasks/` |
+| **Job annotations** | `GET` / `PATCH /api/jobs/{id}/annotations/` (PATCH replaces all annotations for that job’s media) |
+| **Job issues (QA comments)** | `GET` / `POST /api/jobs/{id}/issues/` — POST body: `{"body": "..."}` |
+| Training / deploy / billing | `/api/architectures/`, `/api/training-jobs/`, `/api/registry/`, `/api/endpoints/`, billing routes |
+
+## Documentation URLs
+
+- Swagger: `http://localhost:8000/api/docs/`
 - ReDoc: `http://localhost:8000/api/redoc/`
 - OpenAPI schema: `http://localhost:8000/api/schema/`
-- Django admin: `http://localhost:8000/admin/`
-- Silk profiler: `http://localhost:8000/silk/` (when `DEBUG=True`)
+- Admin: `http://localhost:8000/admin/`
+- Silk (when `DEBUG=True`): `http://localhost:8000/silk/`
 
-## Demo Account
+## Demo account
 
-When running `seed_demo_data`, a demo user is created:
+After `seed_demo_data`:
 
-- Email: `demo@visiox.ai`
-- Password: `Demo1234!`
+- **Email:** `demo@visiox.ai`
+- **Password:** `Demo1234!`
 
-## Useful Commands
+## CORS
+
+Default allowed origins include `http://localhost:3000` and `http://127.0.0.1:3000`. For other front-end origins, set **`CORS_ALLOWED_ORIGINS`** (comma-separated) in `.env`.
+
+## Useful commands
 
 ```bash
-# Run development server
-python manage.py runserver
-
-# Run Celery worker
+python manage.py runserver 0.0.0.0:8000
 celery -A visiox worker -l info
-
-# Run Celery beat
 celery -A visiox beat -l info
-
-# Create new migrations
 python manage.py makemigrations
-
-# Apply migrations
 python manage.py migrate
 ```
+
+## Frontend pairing
+
+The **visiox-ui** Next app uses `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`) and JWT from `/api/auth/login/`.

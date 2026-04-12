@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from annotations.models import Annotation
+from annotations.models import Annotation, Class
 
 
 class AnnotationSerializer(serializers.ModelSerializer):
@@ -11,7 +11,7 @@ class AnnotationSerializer(serializers.ModelSerializer):
         model = Annotation
         fields = [
             'id', 'media', 'class_label', 'class_name',
-            'annotator', 'annotator_username', 'type', 'data',
+            'annotator', 'annotator_username', 'type', 'data', 'frame', 'track_id',
             'is_valid', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'annotator', 'created_at', 'updated_at']
@@ -19,6 +19,20 @@ class AnnotationSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['annotator'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class AnnotationWriteItemSerializer(serializers.Serializer):
+    """Payload item for replacing all annotations on a job's media."""
+
+    class_label = serializers.PrimaryKeyRelatedField(queryset=Class.objects.all())
+    type = serializers.ChoiceField(choices=[c[0] for c in Annotation.ANNOTATION_TYPE_CHOICES])
+    data = serializers.JSONField()
+    frame = serializers.IntegerField(default=0, min_value=0)
+    track_id = serializers.UUIDField(required=False, allow_null=True)
+
+
+class JobAnnotationsReplaceSerializer(serializers.Serializer):
+    annotations = AnnotationWriteItemSerializer(many=True)
 
 
 class BulkAnnotationSerializer(serializers.Serializer):

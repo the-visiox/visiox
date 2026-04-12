@@ -1,4 +1,7 @@
 # Computer Vision Platform — Development Timeline
+
+> **Engineering setup:** For running the Visiox API, database, and pairing with **visiox-ui**, see the repo root **`README.md`** (Docker vs `localhost`, ports `5432` / `5433`, JWT, CORS).
+
 > Reference: [Datature.io](https://datature.io) — All-in-One Vision AI Platform
 
 ---

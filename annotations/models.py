@@ -30,11 +30,14 @@ class Annotation(models.Model):
     
     ANNOTATION_TYPE_CHOICES = [
         ('bbox', 'Bounding Box'),
+        ('rectangle', 'Rectangle'),
         ('polygon', 'Polygon'),
         ('polyline', 'Polyline'),
         ('point', 'Point'),
         ('keypoint', 'Keypoint'),
         ('mask', 'Mask'),
+        ('cuboid', 'Cuboid'),
+        ('tag', 'Tag'),
     ]
 
     media = models.ForeignKey(
@@ -55,6 +58,15 @@ class Annotation(models.Model):
     )
     type = models.CharField(max_length=50, choices=ANNOTATION_TYPE_CHOICES)
     data = models.JSONField()  # Stores annotation coordinates and shape data
+    frame = models.PositiveIntegerField(
+        default=0,
+        help_text='Frame index for video; 0 for single images.',
+    )
+    track_id = models.UUIDField(
+        null=True,
+        blank=True,
+        help_text='Optional stable id for video object tracks across frames.',
+    )
     is_valid = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -69,6 +81,31 @@ class Annotation(models.Model):
 
     def __str__(self):
         return f"{self.type} - {self.class_label.name} on {self.media.id}"
+
+
+class JobIssue(models.Model):
+    """Review / QA comment attached to a labeling job (task)."""
+
+    task = models.ForeignKey(
+        'LabelingTask',
+        on_delete=models.CASCADE,
+        related_name='issues',
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='job_issues',
+    )
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'job_issues'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Issue on task {self.task_id}"
 
 
 class LabelingTask(models.Model):

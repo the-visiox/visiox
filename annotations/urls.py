@@ -15,6 +15,7 @@ router = DefaultRouter()
 router.register('classes', ClassViewSet, basename='classes')
 router.register('annotations', AnnotationViewSet, basename='annotations')
 router.register('tasks', LabelingTaskViewSet, basename='labeling-tasks')
+router.register('jobs', LabelingTaskViewSet, basename='jobs')
 router.register('reviews', ReviewViewSet, basename='reviews')
 
 urlpatterns = router.urls + [
