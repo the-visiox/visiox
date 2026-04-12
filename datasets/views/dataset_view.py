@@ -12,7 +12,12 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 
 from core.permissions import HasPerm
 from datasets.models import Dataset, Media
-from datasets.serializers import DatasetSerializer, MediaSerializer, MediaUploadSerializer
+from datasets.serializers import (
+    DatasetSerializer,
+    MediaSerializer,
+    MediaUploadSerializer,
+    MediaBulkDeleteSerializer,
+)
 from django.http import HttpResponse
 
 from datasets.services.cvat import (
@@ -26,6 +31,13 @@ from datasets.services.cvat import (
     delete_cvat_task,
     update_cvat_task,
     repair_orphaned_datasets,
+)
+from datasets.standalone import (
+    standalone_enabled,
+    browser_payload as standalone_browser_payload,
+    synthetic_cvat_stats,
+    image_media_for_frame,
+    guess_content_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,8 +54,20 @@ def _extract_image_dimensions(file):
         return None, None
 
 
+def _media_name_exists(dataset: Dataset, name: str) -> bool:
+    if not name:
+        return False
+    return dataset.media_files.filter(original_filename=name).exists()
+
+
+def _existing_media_names_in_dataset(dataset: Dataset, names: list[str]) -> set[str]:
+    return set(dataset.media_files.filter(original_filename__in=names).values_list('original_filename', flat=True))
+
+
 def _push_new_images_to_cvat_if_task_empty(dataset: Dataset, image_paths: list[str]) -> None:
     """Send images to CVAT only while the task has no frames (CVAT allows one data upload)."""
+    if standalone_enabled():
+        return
     if not image_paths or not dataset.cvat_task_id:
         return
     try:
@@ -82,12 +106,14 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return [AllowAny()]
         if self.action == 'destroy':
             return [HasPerm('datasets.delete_dataset')]
-        if self.action in ('upload', 'upload_batch'):
+        if self.action in ('upload', 'upload_batch', 'delete_media'):
             return [HasPerm('datasets.upload_media')]
         return super().get_permissions()
 
     def perform_create(self, serializer):
         dataset = serializer.save()
+        if standalone_enabled():
+            return
         try:
             ensure_cvat_task(dataset)
         except Exception:
@@ -96,6 +122,8 @@ class DatasetViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         old_name = serializer.instance.name
         dataset = serializer.save()
+        if standalone_enabled():
+            return
         if dataset.name != old_name and dataset.cvat_task_id:
             try:
                 update_cvat_task(dataset.cvat_task_id, name=dataset.name)
@@ -103,7 +131,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 logger.exception('Failed to sync name change to CVAT task %d', dataset.cvat_task_id)
 
     def perform_destroy(self, instance):
-        if instance.cvat_task_id:
+        if not standalone_enabled() and instance.cvat_task_id:
             try:
                 delete_cvat_task(instance.cvat_task_id)
             except Exception:
@@ -115,6 +143,14 @@ class DatasetViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def annotate_url(self, request, pk=None):
         dataset = self.get_object()
+        if standalone_enabled():
+            return Response(
+                {
+                    'error': 'CVAT is disabled (VISIOX_STANDALONE). Use native annotation in the UI.',
+                    'native_only': True,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             ensure_cvat_task(dataset)
         except Exception:
@@ -128,6 +164,11 @@ class DatasetViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def sync_cvat(self, request, pk=None):
         dataset = self.get_object()
+        if standalone_enabled():
+            return Response(
+                {'error': 'CVAT sync is disabled in standalone mode (VISIOX_STANDALONE).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if not dataset.cvat_task_id:
             return Response({'error': 'No CVAT task linked.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -162,6 +203,10 @@ class DatasetViewSet(viewsets.ModelViewSet):
             'cvat': None,
         }
 
+        if standalone_enabled():
+            result['cvat'] = synthetic_cvat_stats(dataset)
+            return Response(result)
+
         if dataset.cvat_task_id:
             try:
                 result['cvat'] = get_cvat_task_stats(dataset.cvat_task_id)
@@ -178,6 +223,29 @@ class DatasetViewSet(viewsets.ModelViewSet):
         serializer = MediaSerializer(media_qs, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @action(detail=True, methods=['post'])
+    def delete_media(self, request, pk=None):
+        """Delete dataset media files by id (removes stored files and DB rows)."""
+        dataset = self.get_object()
+        serializer = MediaBulkDeleteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ids = serializer.validated_data['media_ids']
+        qs = Media.objects.filter(dataset=dataset, id__in=ids)
+        found_ids = set(qs.values_list('id', flat=True))
+        missing = sorted(set(ids) - found_ids)
+        if missing:
+            return Response(
+                {'detail': 'Some media ids are not in this dataset.', 'invalid_ids': missing},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        deleted_ids: list[int] = []
+        for media in list(qs):
+            if media.file:
+                media.file.delete(save=False)
+            deleted_ids.append(media.id)
+            media.delete()
+        return Response({'deleted': len(deleted_ids), 'ids': deleted_ids})
+
     @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload(self, request, pk=None):
         dataset = self.get_object()
@@ -187,6 +255,12 @@ class DatasetViewSet(viewsets.ModelViewSet):
         uploaded_file = serializer.validated_data['file']
         media_type = serializer.validated_data['type']
         metadata = serializer.validated_data.get('metadata', {})
+
+        if _media_name_exists(dataset, uploaded_file.name):
+            return Response(
+                {'detail': 'A file with this name already exists in this dataset.'},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         width, height = None, None
         if media_type == 'image':
@@ -218,7 +292,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
         url_path='upload-batch',
     )
     def upload_batch(self, request, pk=None):
-        """Upload many files in one request. Images are pushed to CVAT in a single batch if the task is still empty."""
+        """Upload many files in one request. With CVAT enabled, images may be pushed when the task is still empty."""
         dataset = self.get_object()
         files = request.FILES.getlist('files')
         if not files:
@@ -239,6 +313,27 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     metadata = {}
             except (json.JSONDecodeError, TypeError):
                 metadata = {}
+
+        names = [f.name for f in files]
+        if not all(names):
+            return Response(
+                {'detail': 'Every file must have a non-empty name.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(names) != len(set(names)):
+            return Response(
+                {'detail': 'This request contains duplicate file names.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        clashes = _existing_media_names_in_dataset(dataset, names)
+        if clashes:
+            return Response(
+                {
+                    'detail': 'One or more file names already exist in this dataset.',
+                    'files': sorted(clashes),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         created = []
         image_paths: list[str] = []
@@ -280,6 +375,12 @@ class DatasetViewSet(viewsets.ModelViewSet):
     def browser(self, request, pk=None):
         """Return frame list, labels, and annotations for the data browser."""
         dataset = self.get_object()
+        if standalone_enabled():
+            data = standalone_browser_payload(dataset)
+            data['dataset_id'] = dataset.id
+            data['dataset_name'] = dataset.name
+            data['version'] = dataset.version
+            return Response(data)
         if not dataset.cvat_task_id:
             return Response({'error': 'No CVAT task linked'}, status=status.HTTP_400_BAD_REQUEST)
         try:
@@ -288,6 +389,12 @@ class DatasetViewSet(viewsets.ModelViewSet):
             data['dataset_id'] = dataset.id
             data['dataset_name'] = dataset.name
             data['version'] = dataset.version
+            images = list(
+                dataset.media_files.filter(type='image').order_by('uploaded_at', 'id')
+            )
+            for i, fr in enumerate(data.get('frames', [])):
+                if i < len(images):
+                    fr['media_id'] = images[i].id
             return Response(data)
         except Exception:
             logger.exception('Failed to get browser data for dataset %d', dataset.id)
@@ -296,7 +403,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path=r'frames/(?P<frame_num>\d+)',
             authentication_classes=[], permission_classes=[AllowAny])
     def frame_image(self, request, pk=None, frame_num=None):
-        """Proxy a single frame image from CVAT.
+        """Return a frame image (CVAT proxy, or VisioX Media when VISIOX_STANDALONE).
 
         Supports JWT via query param ``token`` so that ``<img src>`` tags work
         without an ``Authorization`` header.
@@ -313,6 +420,22 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return HttpResponse(b'Unauthorized', status=401, content_type='text/plain')
 
         dataset = self.get_object()
+        if standalone_enabled():
+            try:
+                media = image_media_for_frame(dataset, int(frame_num))
+            except (TypeError, ValueError):
+                return HttpResponse(b'Invalid frame', status=400, content_type='text/plain')
+            if not media or not media.file:
+                return HttpResponse(b'Frame not found', status=404, content_type='text/plain')
+            try:
+                with media.file.open('rb') as f:
+                    image_bytes = f.read()
+            except Exception:
+                logger.exception('Failed to read media file for dataset %s frame %s', dataset.id, frame_num)
+                return HttpResponse(b'Failed to load frame', status=500, content_type='text/plain')
+            response = HttpResponse(image_bytes, content_type=guess_content_type(media))
+            response['Cache-Control'] = 'public, max-age=3600'
+            return response
         if not dataset.cvat_task_id:
             return HttpResponse(b'No CVAT task linked', status=400, content_type='text/plain')
         try:
@@ -330,6 +453,11 @@ class DatasetViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='repair-cvat')
     def repair_cvat(self, request):
         """Find and repair datasets whose CVAT tasks no longer exist."""
+        if standalone_enabled():
+            return Response(
+                {'error': 'repair-cvat is disabled in standalone mode (VISIOX_STANDALONE).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         repaired = repair_orphaned_datasets()
         return Response({
             'status': 'ok',

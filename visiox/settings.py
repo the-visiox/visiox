@@ -197,6 +197,9 @@ CVAT_USERNAME = os.getenv('CVAT_USERNAME', 'admin')
 CVAT_PASSWORD = os.getenv('CVAT_PASSWORD', 'master123')
 CVAT_WEBHOOK_URL = os.getenv('CVAT_WEBHOOK_URL', 'http://host.docker.internal:8000/api/datasets/cvat-webhook/')
 
+# When true: no CVAT provisioning, browser + frame images use VisioX Media only.
+VISIOX_STANDALONE = os.getenv('VISIOX_STANDALONE', 'false').lower() in ('1', 'true', 'yes')
+
 # Django Silk — request/query profiler (only active when DEBUG=True)
 SILKY_PYTHON_PROFILER = True
 SILKY_PYTHON_PROFILER_BINARY = False

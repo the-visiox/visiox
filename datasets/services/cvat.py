@@ -324,11 +324,13 @@ def repair_orphaned_datasets() -> list[dict]:
 
 
 def ensure_cvat_task(dataset) -> int | None:
-    """
-    Ensure the dataset has a linked CVAT task.
+    """Ensure the dataset has a linked CVAT task.
+
     Creates the CVAT project (if needed) and task, saves both models,
-    and returns the task_id.
+    and returns the task_id. No-op when ``VISIOX_STANDALONE`` is enabled.
     """
+    if getattr(settings, 'VISIOX_STANDALONE', False):
+        return None
     if dataset.cvat_task_id:
         if cvat_task_exists(dataset.cvat_task_id):
             return dataset.cvat_task_id

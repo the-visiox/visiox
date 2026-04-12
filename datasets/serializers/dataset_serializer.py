@@ -28,6 +28,14 @@ class MediaUploadSerializer(serializers.Serializer):
     metadata = serializers.JSONField(required=False, default=dict)
 
 
+class MediaBulkDeleteSerializer(serializers.Serializer):
+    media_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+        max_length=500,
+    )
+
+
 class DatasetSerializer(serializers.ModelSerializer):
     media_count = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
