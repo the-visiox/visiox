@@ -189,6 +189,38 @@ def get_cvat_task_stats(task_id: int) -> dict:
 
 # ── Data browser helpers ─────────────────────────────────────────────────────
 
+def merge_cvat_deleted_frames(task_id: int, frame_indices: list[int]) -> None:
+    """Mark additional task frame indices as deleted in CVAT (PATCH data/meta).
+
+    VisioX deletes ``Media`` rows first in Django; CVAT must also hide those frames
+    or the browser (which proxies CVAT) would still show them.
+    """
+    if not frame_indices:
+        return
+    session = _authed_session()
+    parsed = urlparse(CVAT_PUBLIC_URL)
+    host_header = parsed.netloc or 'localhost:8080'
+    session.headers.update({'Host': host_header, 'Origin': CVAT_PUBLIC_URL})
+
+    meta_res = session.get(f'{CVAT_HOST}/api/tasks/{task_id}/data/meta')
+    if not meta_res.ok:
+        raise ValueError(f'CVAT data/meta GET failed ({meta_res.status_code}) for task {task_id}')
+    meta = meta_res.json()
+    existing = set(meta.get('deleted_frames') or [])
+    size = int(meta.get('size') or len(meta.get('frames') or []))
+    for idx in frame_indices:
+        if 0 <= idx < size:
+            existing.add(idx)
+    patch_res = session.patch(
+        f'{CVAT_HOST}/api/tasks/{task_id}/data/meta',
+        json={'deleted_frames': sorted(existing)},
+    )
+    if not patch_res.ok:
+        raise ValueError(
+            f'CVAT data/meta PATCH failed ({patch_res.status_code}) for task {task_id}: {patch_res.text[:500]}'
+        )
+
+
 def get_cvat_browser_data(task_id: int, project_id: int | None = None) -> dict:
     """Return frame list, labels, and annotations for the data browser UI."""
     session = _authed_session()
@@ -198,7 +230,9 @@ def get_cvat_browser_data(task_id: int, project_id: int | None = None) -> dict:
 
     # Frame metadata
     meta_res = session.get(f'{CVAT_HOST}/api/tasks/{task_id}/data/meta')
-    frames_raw = meta_res.json().get('frames', []) if meta_res.ok else []
+    meta_json: dict = meta_res.json() if meta_res.ok else {}
+    frames_raw = meta_json.get('frames') or []
+    deleted = set(meta_json.get('deleted_frames') or [])
 
     # Labels (from project or task)
     labels_map = {}
@@ -221,6 +255,8 @@ def get_cvat_browser_data(task_id: int, project_id: int | None = None) -> dict:
     shapes_by_frame: dict[int, list] = {}
     for shape in raw_ann.get('shapes', []):
         frame_num = shape.get('frame', 0)
+        if frame_num in deleted:
+            continue
         label_id = shape.get('label_id')
         label_info = labels_map.get(label_id, {})
         shapes_by_frame.setdefault(frame_num, []).append({
@@ -236,6 +272,8 @@ def get_cvat_browser_data(task_id: int, project_id: int | None = None) -> dict:
 
     frames = []
     for i, f in enumerate(frames_raw):
+        if i in deleted:
+            continue
         frames.append({
             'frame': i,
             'name': f.get('name', f'frame_{i}'),

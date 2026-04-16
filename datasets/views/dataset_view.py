@@ -27,6 +27,7 @@ from datasets.services.cvat import (
     get_cvat_task_stats,
     get_cvat_browser_data,
     get_cvat_frame_image,
+    merge_cvat_deleted_frames,
     upload_cvat_data,
     delete_cvat_task,
     update_cvat_task,
@@ -223,7 +224,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
         serializer = MediaSerializer(media_qs, many=True, context={'request': request})
         return Response(serializer.data)
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], url_path='delete-media')
     def delete_media(self, request, pk=None):
         """Delete dataset media files by id (removes stored files and DB rows)."""
         dataset = self.get_object()
@@ -238,6 +239,26 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 {'detail': 'Some media ids are not in this dataset.', 'invalid_ids': missing},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # CVAT task must hide the same frame indices or the browser (CVAT-backed) still shows them.
+        if not standalone_enabled() and dataset.cvat_task_id:
+            ordered_images = list(
+                dataset.media_files.filter(type='image').order_by('uploaded_at', 'id'),
+            )
+            id_to_frame_index = {m.id: i for i, m in enumerate(ordered_images)}
+            frame_indices = sorted({id_to_frame_index[mid] for mid in ids if mid in id_to_frame_index})
+            if frame_indices:
+                try:
+                    merge_cvat_deleted_frames(dataset.cvat_task_id, frame_indices)
+                except Exception:
+                    # Still delete Media below so the API is usable when CVAT is down or misconfigured.
+                    # Images may still appear until CVAT sync or manual task fix.
+                    logger.exception(
+                        'CVAT data/meta update failed for task %s (dataset %s); continuing with DB delete',
+                        dataset.cvat_task_id,
+                        dataset.id,
+                    )
+
         deleted_ids: list[int] = []
         for media in list(qs):
             if media.file:

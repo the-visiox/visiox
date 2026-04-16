@@ -79,6 +79,10 @@ DATABASES = {
         'PASSWORD': os.getenv('DATABASE_PASSWORD', 'postgres'),
         'HOST': os.getenv('DATABASE_HOST', 'localhost'),
         'PORT': os.getenv('DATABASE_PORT', '5432'),
+        # Avoid hanging startup forever when DB endpoint is unreachable.
+        'OPTIONS': {
+            'connect_timeout': int(os.getenv('DATABASE_CONNECT_TIMEOUT', '5')),
+        },
     },
 }
 
