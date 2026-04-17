@@ -204,8 +204,12 @@ CVAT_WEBHOOK_URL = os.getenv('CVAT_WEBHOOK_URL', 'http://host.docker.internal:80
 # When true: no CVAT provisioning, browser + frame images use VisioX Media only.
 VISIOX_STANDALONE = os.getenv('VISIOX_STANDALONE', 'false').lower() in ('1', 'true', 'yes')
 
-# Django Silk — request/query profiler (only active when DEBUG=True)
-SILKY_PYTHON_PROFILER = True
+# Django Silk — request/query profiler (only active when DEBUG=True).
+# NOTE: keep the Python profiler OFF by default — it hooks sys.setprofile() and
+# slows every view/DB call (and collides with other profilers, flooding the
+# console with "Another profiling tool is already active" tracebacks).
+# Set SILKY_PYTHON_PROFILER=1 in .env only when you actually want to profile.
+SILKY_PYTHON_PROFILER = os.getenv('SILKY_PYTHON_PROFILER', 'false').lower() in ('1', 'true', 'yes')
 SILKY_PYTHON_PROFILER_BINARY = False
 SILKY_MAX_RECORDED_REQUESTS = 1000
 SILKY_MAX_RECORDED_REQUESTS_CHECK_PERCENT = 10

@@ -53,3 +53,25 @@ class Media(models.Model):
 
     def __str__(self):
         return f"{self.type} - {self.original_filename or self.file.name}"
+
+
+class MediaLabelProfile(models.Model):
+    """Per-image label roster (name/color) stored in Postgres.
+
+    IDs in ``labels`` should match ``annotations.Class`` PKs for the owning project
+    so existing annotation payloads keep working.
+    """
+
+    media = models.OneToOneField(
+        Media,
+        on_delete=models.CASCADE,
+        related_name='label_profile',
+    )
+    labels = models.JSONField(default=list, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'media_label_profiles'
+
+    def __str__(self):
+        return f"Label profile for media {self.media_id}"

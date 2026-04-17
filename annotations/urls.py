@@ -4,6 +4,9 @@ from rest_framework.routers import DefaultRouter
 from annotations.views import (
     ClassViewSet,
     AnnotationViewSet,
+    MediaAnnotationsView,
+    MediaLabelProfileView,
+    DatasetFrameLabelProfileView,
     LabelingTaskViewSet,
     ReviewViewSet,
     DatasetExportView,
@@ -19,6 +22,13 @@ router.register('jobs', LabelingTaskViewSet, basename='jobs')
 router.register('reviews', ReviewViewSet, basename='reviews')
 
 urlpatterns = router.urls + [
+    path('media/<int:media_id>/annotations/', MediaAnnotationsView.as_view(), name='media-annotations'),
+    path('media/<int:media_id>/label-profile/', MediaLabelProfileView.as_view(), name='media-label-profile'),
+    path(
+        'datasets/<int:dataset_id>/frames/<int:frame_num>/label-profile/',
+        DatasetFrameLabelProfileView.as_view(),
+        name='dataset-frame-label-profile',
+    ),
     path('datasets/<int:dataset_id>/export/', DatasetExportView.as_view(), name='dataset-export'),
     path('datasets/<int:dataset_id>/quality/', DatasetQualityView.as_view(), name='dataset-quality'),
     path('media/<int:media_id>/quality/', MediaQualityView.as_view(), name='media-quality'),

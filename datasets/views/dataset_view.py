@@ -1,8 +1,10 @@
 import json
 import logging
 
+from django.db import transaction
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
@@ -10,6 +12,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken
 
+from annotations.models import Annotation
+from annotations.serializers import AnnotationSerializer, JobAnnotationsReplaceSerializer
 from core.permissions import HasPerm
 from datasets.models import Dataset, Media
 from datasets.serializers import (
@@ -470,6 +474,52 @@ class DatasetViewSet(viewsets.ModelViewSet):
         except Exception:
             logger.exception('Failed to get frame %s for dataset %d', frame_num, dataset.id)
             return HttpResponse(b'Failed to load frame', status=500, content_type='text/plain')
+
+    @action(detail=True, methods=['get', 'put'],
+            url_path=r'frames/(?P<frame_num>\d+)/annotations')
+    def frame_annotations(self, request, pk=None, frame_num=None):
+        """
+        GET  /api/datasets/<id>/frames/<frame>/annotations/ — list annotations for a frame.
+        PUT  /api/datasets/<id>/frames/<frame>/annotations/ — replace all annotations for that frame's media.
+        """
+        dataset = self.get_object()
+        media = image_media_for_frame(dataset, int(frame_num))
+        if media is None:
+            return Response({'detail': f'Frame {frame_num} not found in dataset {dataset.id}.'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        if request.method == 'GET':
+            qs = Annotation.objects.filter(media=media).select_related('class_label', 'annotator')
+            return Response(AnnotationSerializer(qs, many=True).data)
+
+        serializer = JobAnnotationsReplaceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        items = serializer.validated_data['annotations']
+
+        project_id = dataset.project_id
+        for item in items:
+            if item['class_label'].project_id != project_id:
+                raise ValidationError(
+                    {'annotations': f'Class {item["class_label"].pk} does not belong to this project.'}
+                )
+
+        user = request.user
+        with transaction.atomic():
+            Annotation.objects.filter(media=media).delete()
+            Annotation.objects.bulk_create([
+                Annotation(
+                    media=media,
+                    class_label=item['class_label'],
+                    annotator=user,
+                    type=item['type'],
+                    data=item['data'],
+                    frame=item.get('frame', 0),
+                    track_id=item.get('track_id'),
+                )
+                for item in items
+            ])
+        qs = Annotation.objects.filter(media=media).select_related('class_label', 'annotator')
+        return Response(AnnotationSerializer(qs, many=True).data)
 
     @action(detail=False, methods=['post'], url_path='repair-cvat')
     def repair_cvat(self, request):

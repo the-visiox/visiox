@@ -9,6 +9,120 @@ Django + Django REST Framework API for the VisioX computer vision platform: team
 - Redis 7+ (Celery broker / cache)
 - `pip` and a virtual environment
 
+## Chạy tách riêng: DB / Backend / Frontend
+
+Mở **3 terminal** độc lập để dễ debug:
+
+1. Terminal A: chạy **Database + Redis**
+2. Terminal B: chạy **Django Backend**
+3. Terminal C: chạy **Next.js Frontend** (`visiox-ui`)
+
+---
+
+### Terminal A — Database (Postgres) + Redis
+
+> Trong repo `visiox`
+
+```bash
+docker compose up -d db redis
+```
+
+Kiểm tra nhanh:
+
+```bash
+docker compose ps
+```
+
+Kỳ vọng `db` và `redis` ở trạng thái `Up`.
+
+---
+
+### Terminal B — Backend (Django)
+
+> Trong repo `visiox`
+
+```bash
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+# source .venv/bin/activate
+
+pip install -r requirements.txt
+cp env.example .env
+```
+
+Chỉnh `.env` (khi DB chạy bằng Docker ở terminal A):
+
+```env
+DATABASE_HOST=localhost
+DATABASE_PORT=5433
+DATABASE_NAME=visiox_db
+DATABASE_USER=postgres
+DATABASE_PASSWORD=postgres
+CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
+```
+
+Chạy migrate + seed:
+
+```bash
+python manage.py migrate
+python manage.py setup_groups
+python manage.py seed_demo_data
+```
+
+Nếu bạn dùng Conda/env riêng (ví dụ `py312`), ưu tiên chạy bằng đúng Python executable để tránh nhầm môi trường:
+
+```bash
+C:\Users\Admin\miniconda3\envs\py312\python.exe manage.py migrate
+```
+
+> Quan trọng cho annotation: migration `datasets.0006_medialabelprofile` phải ở trạng thái **[X]**. Nếu thiếu, thao tác save label profile sẽ lỗi `relation "media_label_profiles" does not exist` (frontend có thể hiện `Annotations saved, but label profile sync failed.`).
+
+Kiểm tra nhanh:
+
+```bash
+python manage.py showmigrations datasets
+```
+
+Chạy API:
+
+```bash
+python manage.py runserver 0.0.0.0:8000
+```
+
+Test nhanh:
+- Swagger: `http://localhost:8000/api/docs/`
+- Health check thủ công: mở `http://localhost:8000/api/schema/`
+
+---
+
+### Terminal C — Frontend (Next.js)
+
+> Trong repo `visiox-ui`
+
+```bash
+pnpm install
+cp .env.local.example .env.local
+```
+
+Đảm bảo `.env.local`:
+
+```env
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+```
+
+Chạy frontend:
+
+```bash
+pnpm dev
+```
+
+Mở `http://localhost:3000`, đăng nhập:
+- Email: `demo@visiox.ai`
+- Password: `Demo1234!`
+
 ## Database host: Docker vs local CLI
 
 - **`DATABASE_HOST=db`** resolves only **inside** Docker Compose (service name). Running `python manage.py` **on your PC** (Windows/macOS/Linux) must use **`localhost`** (or `127.0.0.1`).
@@ -96,6 +210,7 @@ celery -A visiox worker -l info
 celery -A visiox beat -l info
 python manage.py makemigrations
 python manage.py migrate
+python manage.py showmigrations datasets
 ```
 
 ## Frontend pairing

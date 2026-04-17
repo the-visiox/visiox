@@ -1,11 +1,20 @@
+from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
+from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from annotations.models import Annotation
-from annotations.serializers import AnnotationSerializer, BulkAnnotationSerializer
+from annotations.serializers import (
+    AnnotationSerializer,
+    BulkAnnotationSerializer,
+    JobAnnotationsReplaceSerializer,
+)
+from datasets.models import Media
 
 
 class AnnotationViewSet(viewsets.ModelViewSet):
@@ -50,3 +59,56 @@ class AnnotationViewSet(viewsets.ModelViewSet):
             media__dataset__project__team__members__user=request.user,
         ).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MediaAnnotationsView(APIView):
+    """
+    GET  /api/media/<media_id>/annotations/ — list annotations for a media item.
+    PUT  /api/media/<media_id>/annotations/ — replace ALL annotations for a media item (full snapshot save).
+    """
+
+    def _get_media(self, request, media_id):
+        return get_object_or_404(
+            Media.objects.filter(
+                dataset__project__team__members__user=request.user,
+            ).distinct(),
+            pk=media_id,
+        )
+
+    @extend_schema(responses={200: AnnotationSerializer(many=True)})
+    def get(self, request, media_id):
+        media = self._get_media(request, media_id)
+        qs = Annotation.objects.filter(media=media).select_related('class_label', 'annotator')
+        return Response(AnnotationSerializer(qs, many=True).data)
+
+    @extend_schema(request=JobAnnotationsReplaceSerializer, responses={200: AnnotationSerializer(many=True)})
+    def put(self, request, media_id):
+        media = self._get_media(request, media_id)
+        serializer = JobAnnotationsReplaceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        items = serializer.validated_data['annotations']
+
+        project_id = media.dataset.project_id
+        for item in items:
+            if item['class_label'].project_id != project_id:
+                raise ValidationError(
+                    {'annotations': f'Class {item["class_label"].pk} does not belong to this project.'}
+                )
+
+        user = request.user
+        with transaction.atomic():
+            Annotation.objects.filter(media=media).delete()
+            Annotation.objects.bulk_create([
+                Annotation(
+                    media=media,
+                    class_label=item['class_label'],
+                    annotator=user,
+                    type=item['type'],
+                    data=item['data'],
+                    frame=item.get('frame', 0),
+                    track_id=item.get('track_id'),
+                )
+                for item in items
+            ])
+        qs = Annotation.objects.filter(media=media).select_related('class_label', 'annotator')
+        return Response(AnnotationSerializer(qs, many=True).data)
