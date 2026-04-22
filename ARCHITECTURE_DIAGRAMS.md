@@ -1,20 +1,23 @@
-# CVAT Source Diagrams
+# VisioX Backend Source Diagrams
 
-These diagrams were derived from the current repository structure and runtime configuration, mainly from:
+These diagrams were derived from the current VisioX Django repository structure and runtime configuration, mainly from:
 
 - `docker-compose.yml`
-- `components/serverless/docker-compose.serverless.yml`
-- `site/content/en/docs/contributing/repo-structure.md`
-- `cvat/settings/base.py`
-- `cvat/urls.py`
-- `cvat/apps/engine/urls.py`
-- `cvat/apps/lambda_manager/urls.py`
-- `cvat/apps/events/views.py`
-- `cvat-ui/package.json`
-- `cvat-core/package.json`
-- `cvat-canvas/package.json`
-- `cvat-canvas3d/package.json`
-- `cvat-data/package.json`
+- `requirements.txt`
+- `visiox/settings.py`
+- `visiox/urls.py`
+- `visiox/celery.py`
+- `authentication/urls.py`
+- `teams/urls.py`
+- `projects/urls.py`
+- `datasets/urls.py`
+- `datasets/services/cvat.py`
+- `annotations/urls.py`
+- `training/urls.py`
+- `deployments/urls.py`
+- `billing/urls.py`
+
+They intentionally mirror the style of `cvat/ARCHITECTURE_DIAGRAMS.md`, but describe VisioX as the orchestration layer around its own Django API, local or S3 media storage, Celery workers, Stripe billing, and optional CVAT-backed annotation.
 
 You can render these blocks directly in GitHub Markdown or in Mermaid Live.
 
@@ -22,108 +25,76 @@ You can render these blocks directly in GitHub Markdown or in Mermaid Live.
 
 ```mermaid
 flowchart LR
-    User[Annotator / Admin / Reviewer]
-    SDK[Python SDK]
-    CLI[CLI]
+    User[Workspace user / Admin]
+    Frontend[visiox-ui Next.js app]
+    APIClient[External API client]
 
-    subgraph Edge[Edge / Routing]
-        Traefik[Traefik reverse proxy]
+    subgraph Backend[VisioX Django Backend]
+        API[Django REST API]
+        Auth[JWT auth and API key auth]
+        CeleryW["Celery worker<br/>training, deployment, sync jobs"]
+        CeleryB["Celery beat<br/>scheduled jobs"]
+        Docs["OpenAPI docs<br/>drf-spectacular"]
+        Silk[Django Silk profiler]
     end
 
-    subgraph Client[Client Side]
-        UI[cvat-ui React SPA]
-        Core[cvat-core API/domain layer]
-        Canvas2D[cvat-canvas]
-        Canvas3D[cvat-canvas3d]
-        Data["cvat-data<br/>media decoding"]
-    end
-
-    subgraph Backend[CVAT Backend]
-        Server[Django API server]
-        ImportW["RQ worker<br/>import"]
-        ExportW["RQ worker<br/>export"]
-        AnnotW["RQ worker<br/>annotation"]
-        QualityW["RQ worker<br/>quality reports"]
-        WebhookW["RQ worker<br/>webhooks"]
-        UtilityW["RQ worker<br/>utils / cleaning / notifications"]
-        ConsensusW["RQ worker<br/>consensus"]
-        ChunkW["RQ worker<br/>chunks"]
+    subgraph Apps[Domain Apps]
+        Teams[teams]
+        Projects[projects]
+        Datasets[datasets]
+        Annotations[annotations]
+        Training[training]
+        Deployments[deployments]
+        Billing[billing]
+        Core[core user model and permissions]
     end
 
     subgraph DataStores[State and Storage]
         PG[(PostgreSQL)]
-        Redis[(Redis in-memory queues)]
-        Kvrocks[(Kvrocks / on-disk cache)]
-        Media[(CVAT data / logs / keys volumes)]
-        Share[Mounted server share]
-        Cloud["Cloud storage<br/>S3 / Azure / GCS"]
+        Redis[(Redis broker and result backend)]
+        Media[(Local media volume)]
+        S3[(Optional S3 bucket)]
     end
 
-    subgraph PolicyAI[Policy / AI]
-        OPA[Open Policy Agent]
-        Nuclio["Nuclio<br/>serverless functions"]
+    subgraph External[External Services]
+        CVAT["CVAT server<br/>tasks, jobs, frames, labels"]
+        Stripe[Stripe API and webhooks]
+        Inference["Inference runtime / endpoint target"]
     end
 
-    subgraph Analytics[Analytics]
-        Vector[Vector log collector]
-        ClickHouse[(ClickHouse events DB)]
-        Grafana[Grafana dashboards]
-    end
+    User --> Frontend
+    Frontend --> API
+    APIClient --> API
 
-    User --> Traefik
-    SDK --> Traefik
-    CLI --> Traefik
+    API --> Auth
+    API --> Docs
+    API --> Silk
+    API --> Core
+    API --> Teams
+    API --> Projects
+    API --> Datasets
+    API --> Annotations
+    API --> Training
+    API --> Deployments
+    API --> Billing
 
-    Traefik --> UI
-    Traefik --> Server
+    Datasets --> CVAT
+    Annotations --> CVAT
+    Billing --> Stripe
+    Deployments --> Inference
 
-    UI --> Core
-    UI --> Canvas2D
-    UI --> Canvas3D
-    Core --> Data
-    Core --> Server
-
-    Server --> PG
-    Server --> Redis
-    Server --> Kvrocks
-    Server --> Media
-    Server --> OPA
-    Server --> ClickHouse
-    Server --> Nuclio
-    Server --> Share
-    Server --> Cloud
-    Server --> Vector
-
-    ImportW --> Redis
-    ExportW --> Redis
-    AnnotW --> Redis
-    QualityW --> Redis
-    WebhookW --> Redis
-    UtilityW --> Redis
-    ConsensusW --> Redis
-    ChunkW --> Redis
-
-    ImportW --> PG
-    ExportW --> PG
-    AnnotW --> PG
-    QualityW --> PG
-    WebhookW --> PG
-    UtilityW --> PG
-    ConsensusW --> PG
-    ChunkW --> PG
-
-    ImportW --> Media
-    ExportW --> Media
-    AnnotW --> Media
-    ChunkW --> Media
-
-    ImportW --> Cloud
-    ExportW --> Cloud
-    AnnotW --> Nuclio
-
-    Vector --> ClickHouse
-    Grafana --> ClickHouse
-    User --> Grafana
+    API --> PG
+    API --> Media
+    API --> S3
+    API --> Redis
+    API --> CeleryW
+    CeleryB --> Redis
+    CeleryW --> Redis
+    CeleryW --> PG
+    CeleryW --> Media
+    CeleryW --> S3
+    CeleryW --> CVAT
+    CeleryW --> Inference
 ```
 
 ## 2. Data Flow Diagram
@@ -131,165 +102,204 @@ flowchart LR
 ```mermaid
 flowchart TD
     User[User]
-    SDKCLI[SDK / CLI]
-    Cloud[Cloud Storage or Server Share]
-    Model[Serverless Model]
-    Hook[Webhook Receiver]
+    UI[visiox-ui browser app]
+    API[Django REST API]
+    CVAT[CVAT API and SDK]
+    Stripe[Stripe]
+    ModelRuntime[Model training / inference runtime]
 
-    P1[Process: UI / API request handling]
-    P2[Process: Task import and media preparation]
-    P3[Process: Annotation and frame/chunk delivery]
-    P4[Process: Export / backup / dataset conversion]
-    P5[Process: Auto-annotation / quality / analytics jobs]
-    P6[Process: Event and webhook dispatch]
+    P1[Process: authentication and workspace navigation]
+    P2[Process: project and dataset management]
+    P3[Process: media upload and frame delivery]
+    P4[Process: annotation, review, quality, export]
+    P5[Process: training jobs and experiment metrics]
+    P6[Process: model registry and deployment endpoints]
+    P7[Process: billing, usage, API keys, webhooks]
 
-    D1[(PostgreSQL metadata)]
-    D2[(Redis RQ queues)]
-    D3[(Media files, chunks, manifests, cache)]
-    D4[(ClickHouse event store)]
+    D1[(PostgreSQL application metadata)]
+    D2[(Redis Celery queues and results)]
+    D3[(Local media volume or S3 object storage)]
 
-    User -->|browser actions, uploads, task ops| P1
-    SDKCLI -->|REST calls| P1
+    User --> UI
+    UI -->|JWT login, token refresh, profile| P1
+    P1 --> API
+    P1 --> D1
 
-    P1 -->|task/job/project metadata| D1
-    P1 -->|enqueue import/export/annotation/report jobs| D2
-    P1 -->|read/write media requests| P3
-    P1 -->|log events| P6
+    UI -->|teams, projects, datasets| P2
+    P2 --> API
+    P2 --> D1
+    P2 -->|ensure project/task, sync state| CVAT
 
-    Cloud -->|raw media, annotations, backups| P2
-    P2 -->|prepared task data, manifests, chunks| D3
-    P2 -->|task/data records| D1
-    D2 -->|import jobs| P2
+    UI -->|uploads and browser requests| P3
+    P3 --> API
+    P3 --> D3
+    P3 -->|task data upload, frame proxy| CVAT
+    P3 -->|media and dataset records| D1
+    P3 -->|frame bytes, thumbnails, media metadata| UI
 
-    D3 -->|frames, previews, chunks| P3
-    D1 -->|task/job labels and annotations| P3
-    P3 -->|annotation updates| D1
-    P3 -->|client/server events| P6
-    P3 -->|invoke model request| P5
-    P3 -->|annotated data back to user| User
+    UI -->|labels, shapes, tracks, reviews| P4
+    P4 --> API
+    P4 --> D1
+    P4 -->|job annotations and task annotations| CVAT
+    P4 -->|COCO, YOLO, VOC export| UI
 
-    D2 -->|export jobs| P4
-    D1 -->|annotations and metadata| P4
-    D3 -->|media payloads| P4
-    P4 -->|downloadable archive/dataset| User
-    P4 -->|exported dataset/backup| Cloud
+    UI -->|start, stop, inspect jobs| P5
+    P5 --> API
+    P5 -->|enqueue work| D2
+    D2 -->|training tasks| ModelRuntime
+    P5 -->|jobs, experiments, metrics| D1
 
-    D2 -->|annotation, quality, analytics, webhook jobs| P5
-    P5 -->|model inference request| Model
-    Model -->|predictions / masks / boxes| P5
-    P5 -->|quality reports / analytics summaries| D1
-    P5 -->|derived events| P6
+    UI -->|registry and endpoints| P6
+    P6 --> API
+    P6 --> D1
+    P6 -->|start, stop, invoke| ModelRuntime
 
-    P6 -->|event logs| D4
-    P6 -->|HTTP callbacks| Hook
+    UI -->|plans, subscriptions, usage, API keys| P7
+    Stripe -->|checkout and webhook events| P7
+    P7 --> API
+    P7 --> D1
 ```
 
 ## 3. Backend Component Diagram
 
 ```mermaid
 flowchart LR
-    subgraph Django[CVAT Django application]
-        Engine["engine<br/>Tasks, Jobs, Projects,<br/>Annotations, Media, CloudStorage"]
-        IAM["iam<br/>Auth, permissions,<br/>OPA policy enforcement"]
-        Orgs[organizations]
-        Dataset["dataset_manager<br/>Import/export formats,<br/>dataset conversion"]
-        Lambda["lambda_manager<br/>Auto-annotation requests"]
-        Events["events<br/>Client/server event logging,<br/>CSV export"]
-        Webhooks["webhooks<br/>Domain event subscriptions"]
-        Quality["quality_control<br/>Conflicts, reports,<br/>quality settings"]
-        Analytics["analytics_report<br/>Derived metrics and reports"]
-        Repo[dataset_repo]
-        Health[health]
-        LogViewer[log_viewer]
+    subgraph Django[VisioX Django application]
+        Core["core<br/>custom user model,<br/>permissions, JWT query auth"]
+        Auth["authentication<br/>login, register, logout,<br/>me, token refresh"]
+        Teams["teams<br/>teams, members, roles"]
+        Projects["projects<br/>project metadata,<br/>CVAT project mapping"]
+        Datasets["datasets<br/>dataset records, media,<br/>CVAT task mapping, browser, frames"]
+        Annot["annotations<br/>classes, media annotations,<br/>jobs, reviews, quality, export"]
+        Training["training<br/>architectures, training jobs,<br/>experiments, metrics"]
+        Deploy["deployments<br/>model registry, endpoints,<br/>monitoring, drift alerts"]
+        Billing["billing<br/>plans, subscriptions,<br/>usage, API keys, webhooks"]
     end
 
-    OPA[Open Policy Agent]
-    RQ[Redis + django-rq]
+    DRF[Django REST Framework]
+    JWT[SimpleJWT]
+    Celery[Celery]
+    Beat[django-celery-beat]
+    Spectacular[drf-spectacular]
+    Silk[Django Silk]
+
     PG[(PostgreSQL)]
-    Media[(Media files / cache)]
-    ClickHouse[(ClickHouse)]
-    Nuclio[Nuclio functions]
-    ExternalHooks[External webhook endpoints]
+    Redis[(Redis)]
+    Media[(Media files)]
+    S3[(Optional S3)]
+    CVAT[CVAT SDK / REST]
+    Stripe[Stripe]
 
-    IAM --> OPA
+    DRF --> Core
+    DRF --> Auth
+    DRF --> Teams
+    DRF --> Projects
+    DRF --> Datasets
+    DRF --> Annot
+    DRF --> Training
+    DRF --> Deploy
+    DRF --> Billing
 
-    Engine --> IAM
-    Engine --> Orgs
-    Engine --> Dataset
-    Engine --> Events
-    Engine --> PG
-    Engine --> Media
-    Engine --> RQ
+    Auth --> JWT
+    Core --> PG
+    Teams --> PG
+    Projects --> PG
+    Datasets --> PG
+    Annot --> PG
+    Training --> PG
+    Deploy --> PG
+    Billing --> PG
 
-    Dataset --> Engine
-    Dataset --> RQ
-    Dataset --> Media
+    Datasets --> Media
+    Datasets --> S3
+    Datasets --> CVAT
+    Annot --> CVAT
+    Billing --> Stripe
 
-    Lambda --> Engine
-    Lambda --> RQ
-    Lambda --> Nuclio
+    Training --> Celery
+    Deploy --> Celery
+    Datasets --> Celery
+    Beat --> Celery
+    Celery --> Redis
+    Celery --> PG
 
-    Webhooks --> Engine
-    Webhooks --> Events
-    Webhooks --> RQ
-    Webhooks --> ExternalHooks
-
-    Quality --> Engine
-    Quality --> RQ
-    Quality --> PG
-
-    Analytics --> Engine
-    Analytics --> RQ
-    Analytics --> ClickHouse
-    Analytics --> PG
-
-    Events --> ClickHouse
-    Events --> RQ
-
-    Repo --> Engine
-    Health --> Engine
-    LogViewer --> ClickHouse
-    LogViewer --> IAM
+    Spectacular --> DRF
+    Silk --> DRF
 ```
 
-## 4. Frontend and Client Component Diagram
+## 4. CVAT Integration Diagram
 
 ```mermaid
-flowchart LR
-    subgraph Browser[Browser]
-        UI["cvat-ui<br/>React + Redux + Ant Design"]
-        Pages["Workspaces, tasks,<br/>projects, admin,<br/>analytics screens"]
-    end
+sequenceDiagram
+    participant UI as visiox-ui
+    participant API as VisioX Django API
+    participant DB as PostgreSQL
+    participant Media as Media storage
+    participant CVAT as CVAT API
 
-    subgraph FrontendPackages[Monorepo UI packages]
-        Core["cvat-core<br/>REST client, domain models,<br/>uploads via tus-js-client"]
-        Canvas2D["cvat-canvas<br/>2D annotation canvas"]
-        Canvas3D["cvat-canvas3d<br/>3D workspace canvas"]
-        Data["cvat-data<br/>media decoding / zip handling"]
-    end
+    UI->>API: Create project / dataset
+    API->>DB: Save VisioX project and dataset
+    API->>CVAT: Create CVAT project if needed
+    API->>CVAT: Create CVAT task for dataset
+    API->>DB: Store cvat_project_id and cvat_task_id
 
-    subgraph ExternalClients[Other repo clients]
-        SDK["cvat-sdk<br/>Python client library"]
-        CLI["cvat-cli<br/>command-line wrapper"]
-    end
+    UI->>API: Upload image or video
+    API->>Media: Store original media
+    API->>DB: Save media metadata
+    API->>CVAT: Upload task data when CVAT mode is enabled
 
-    API[CVAT REST API]
+    UI->>API: Open data browser
+    API->>CVAT: Fetch task labels, metadata, annotations
+    API->>DB: Map frames to VisioX Media rows when possible
+    API-->>UI: Frames, labels, annotation counts
 
-    UI --> Pages
-    UI --> Core
-    UI --> Canvas2D
-    UI --> Canvas3D
-    Core --> Data
-    Core --> API
+    UI->>API: Request frame image
+    API->>CVAT: Fetch frame bytes from task data
+    API-->>UI: Proxied image bytes
 
-    SDK --> API
-    CLI --> API
-    Canvas3D --> Core
+    CVAT->>API: Project/task/job webhook event
+    API->>DB: Update linked dataset state
+```
+
+## 5. API Surface Diagram
+
+```mermaid
+flowchart TB
+    Root[/api/]
+    Auth[/api/auth/]
+    Teams[/api/teams/]
+    Projects[/api/projects/]
+    Datasets[/api/datasets/]
+    Annotations[/api/annotations/ and /api/classes/]
+    Jobs[/api/jobs/ and /api/tasks/]
+    Training[/api/architectures/ and /api/training-jobs/]
+    Deploy[/api/registry/ and /api/endpoints/]
+    Billing[/api/plans/, subscriptions, usage, api-keys, webhooks]
+    Docs[/api/schema/, /api/docs/, /api/redoc/]
+
+    Root --> Auth
+    Root --> Teams
+    Root --> Projects
+    Root --> Datasets
+    Root --> Annotations
+    Root --> Jobs
+    Root --> Training
+    Root --> Deploy
+    Root --> Billing
+    Root --> Docs
+
+    Datasets --> Browser[/api/datasets/{id}/browser/]
+    Datasets --> Frames[/api/datasets/{id}/frames/{frame}/]
+    Datasets --> Export[/api/datasets/{id}/export/]
+    Datasets --> Sync[/api/datasets/{id}/sync_cvat/]
+    Datasets --> Webhook[/api/datasets/cvat-webhook/]
+    Jobs --> JobAnnotations[/api/jobs/{id}/annotations/]
+    Jobs --> JobIssues[/api/jobs/{id}/issues/]
 ```
 
 ## Notes
 
-- The main REST surface is centered in `cvat.apps.engine`, then extended by `iam`, `organizations`, `lambda_manager`, `events`, `webhooks`, `quality_control`, and `analytics_report`.
-- Queue-backed operations are first-class in this source tree. Import, export, annotation, webhooks, quality reports, analytics reports, cleaning, and notifications all run through `django-rq`.
-- Analytics is a separate path from transactional metadata. PostgreSQL stores application state; ClickHouse stores event logs and feeds Grafana dashboards and analytics reports.
-- The frontend is intentionally split into reusable packages. `cvat-ui` is the SPA, while `cvat-core`, `cvat-data`, `cvat-canvas`, and `cvat-canvas3d` provide the main client-side layers underneath it.
+- VisioX is not a CVAT fork. It is a product API that uses CVAT as an optional annotation engine while keeping VisioX projects, datasets, users, billing, training, and deployments in its own Django domain model.
+- PostgreSQL stores transactional state. Redis is used by Celery as the broker and result backend. Media is local by default and can move to S3 through `USE_S3`.
+- CVAT integration is concentrated in `datasets/services/cvat.py`, with project/task provisioning, task data upload, frame proxying, task stats, browser data, and webhook registration.
+- The current Docker Compose stack runs Django API, Celery worker, Celery beat, PostgreSQL, and Redis. CVAT is expected to run separately and is reached through `CVAT_HOST` / `CVAT_PUBLIC_URL`.
