@@ -202,6 +202,12 @@ CVAT_USERNAME = os.getenv('CVAT_USERNAME', 'admin')
 CVAT_PASSWORD = os.getenv('CVAT_PASSWORD', 'master123')
 CVAT_WEBHOOK_URL = os.getenv('CVAT_WEBHOOK_URL', 'http://host.docker.internal:8000/api/datasets/cvat-webhook/')
 
+# OAuth login. Frontend redirects to /auth/callback and posts provider code here.
+GOOGLE_OAUTH_CLIENT_ID = os.getenv('GOOGLE_OAUTH_CLIENT_ID', '')
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv('GOOGLE_OAUTH_CLIENT_SECRET', '')
+GITHUB_OAUTH_CLIENT_ID = os.getenv('GITHUB_OAUTH_CLIENT_ID', '')
+GITHUB_OAUTH_CLIENT_SECRET = os.getenv('GITHUB_OAUTH_CLIENT_SECRET', '')
+
 # When true: no CVAT provisioning, browser + frame images use VisioX Media only.
 VISIOX_STANDALONE = os.getenv('VISIOX_STANDALONE', 'false').lower() in ('1', 'true', 'yes')
 
