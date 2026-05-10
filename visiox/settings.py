@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'projects',
     'datasets',
     'annotations',
+    'dataverse',
     'training',
     'deployments',
     'billing',

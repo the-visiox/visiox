@@ -18,6 +18,7 @@ urlpatterns = [
     path('api/', include('projects.urls')),
     path('api/', include('datasets.urls')),
     path('api/', include('annotations.urls')),
+    path('api/', include('dataverse.urls')),
 
     # Phase 3–5
     path('api/', include('training.urls')),
