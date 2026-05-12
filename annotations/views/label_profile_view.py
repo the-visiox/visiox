@@ -19,18 +19,12 @@ class LabelProfileWriteSerializer(serializers.Serializer):
     labels = LabelItemSerializer(many=True)
 
 
-def _media_for_user(request, media_id: int) -> Media:
-    return get_object_or_404(
-        Media.objects.filter(dataset__project__team__members__user=request.user).distinct(),
-        pk=media_id,
-    )
+def _media_for_user(_request, media_id: int) -> Media:
+    return get_object_or_404(Media, pk=media_id)
 
 
-def _dataset_for_user(request, dataset_id: int) -> Dataset:
-    return get_object_or_404(
-        Dataset.objects.filter(project__team__members__user=request.user).distinct(),
-        pk=dataset_id,
-    )
+def _dataset_for_user(_request, dataset_id: int) -> Dataset:
+    return get_object_or_404(Dataset, pk=dataset_id)
 
 
 def _validate_labels_for_media(media: Media, labels: list[dict]) -> None:

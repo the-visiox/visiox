@@ -1,5 +1,4 @@
 from django.db import transaction
-from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -67,23 +66,18 @@ class MediaAnnotationsView(APIView):
     PUT  /api/media/<media_id>/annotations/ — replace ALL annotations for a media item (full snapshot save).
     """
 
-    def _get_media(self, request, media_id):
-        return get_object_or_404(
-            Media.objects.filter(
-                dataset__project__team__members__user=request.user,
-            ).distinct(),
-            pk=media_id,
-        )
+    def _get_media(self, media_id):
+        return get_object_or_404(Media, pk=media_id)
 
     @extend_schema(responses={200: AnnotationSerializer(many=True)})
-    def get(self, request, media_id):
-        media = self._get_media(request, media_id)
+    def get(self, _request, media_id):
+        media = self._get_media(media_id)
         qs = Annotation.objects.filter(media=media).select_related('class_label', 'annotator')
         return Response(AnnotationSerializer(qs, many=True).data)
 
     @extend_schema(request=JobAnnotationsReplaceSerializer, responses={200: AnnotationSerializer(many=True)})
     def put(self, request, media_id):
-        media = self._get_media(request, media_id)
+        media = self._get_media(media_id)
         serializer = JobAnnotationsReplaceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         items = serializer.validated_data['annotations']
