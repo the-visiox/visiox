@@ -1,3 +1,4 @@
+# Run with: python manage.py shell < scripts/check_auth.py
 from django.contrib.auth import authenticate
 from core.models import UserModel
 user = UserModel.objects.filter(username='admin@visiox.ai').first()
