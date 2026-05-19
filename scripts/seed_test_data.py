@@ -4,15 +4,33 @@ import django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'visiox.settings')
 django.setup()
 
+from django.conf import settings
 from teams.models import Team
+from teams.models import TeamMember
 from core.models.user import UserModel
 from projects.models import Project
 from datasets.models import Dataset, Media
 
-user = UserModel.objects.get(username='chunhattan2001')
-team = Team.objects.get(name='Test Workspace')
+user = UserModel.objects.filter(username='chunhattan2001').first()
+if user is None:
+    user = UserModel.objects.filter(email='demo@visiox.ai').first()
+if user is None:
+    user = UserModel.objects.create_user(
+        username='demo',
+        email='demo@visiox.ai',
+        password='Demo1234!',
+        first_name='Demo',
+        last_name='User',
+    )
 
-base = r'D:\visiox_platform\visiox\media\media\2026\04\03\demo'
+team, _ = Team.objects.get_or_create(name='Test Workspace', defaults={'owner': user})
+TeamMember.objects.get_or_create(team=team, user=user, defaults={'role': 'owner'})
+
+demo_user = UserModel.objects.filter(email='demo@visiox.ai').first()
+if demo_user is not None:
+    TeamMember.objects.get_or_create(team=team, user=demo_user, defaults={'role': 'admin'})
+
+base = os.path.join(settings.MEDIA_ROOT, 'media', '2026', '04', '03', 'demo')
 
 projects_data = [
     {'folder': 'Cityscapes_Fine_Trai', 'name': 'Urban Scene Segmentation', 'task_type': 'semantic_segmentation'},
@@ -28,8 +46,11 @@ projects_data = [
 all_folders = os.listdir(base)
 
 for pd in projects_data:
-    # Find matching folder (prefix match to handle encoding)
-    matching = [f for f in all_folders if f.startswith(pd['folder'][:14])]
+    # Find matching folder. Prefer exact/prefix folder names before falling
+    # back to a short prefix for folders with display punctuation.
+    matching = [f for f in all_folders if f == pd['folder'] or f.startswith(pd['folder'])]
+    if not matching:
+        matching = [f for f in all_folders if f.startswith(pd['folder'][:14])]
     if not matching:
         print(f"Folder not found for prefix: {pd['folder'][:14]}")
         continue
@@ -53,13 +74,18 @@ for pd in projects_data:
     files = [f for f in os.listdir(folder_path) if f.lower().endswith(image_exts)]
     print(f'  Found {len(files)} image files in {folder_name}')
 
+    rel_prefix = '/'.join(['media', '2026', '04', '03', 'demo', folder_name])
+    if dataset.media_files.exists() and not dataset.media_files.filter(file__startswith=rel_prefix).exists():
+        removed, _ = dataset.media_files.all().delete()
+        print(f'  Removed {removed} stale media records from a previous folder match')
+
     added = 0
     for fname in files[:15]:
         if Media.objects.filter(dataset=dataset, original_filename=fname).exists():
             continue
         fpath = os.path.join(folder_path, fname)
         fsize = os.path.getsize(fpath)
-        rel_path = '/'.join(['media', '2026', '04', '03', 'demo', folder_name, fname])
+        rel_path = '/'.join([rel_prefix, fname])
         Media.objects.create(
             dataset=dataset,
             type='image',
