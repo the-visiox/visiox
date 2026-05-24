@@ -119,10 +119,8 @@ class DatasetViewSet(viewsets.ModelViewSet):
         dataset = serializer.save()
         if standalone_enabled():
             return
-        try:
-            ensure_cvat_task(dataset)
-        except Exception:
-            logger.exception('Failed to auto-provision CVAT task for dataset %d', dataset.id)
+        from datasets.tasks import provision_cvat_task
+        provision_cvat_task.delay(dataset.id)
 
     def perform_update(self, serializer):
         old_name = serializer.instance.name
