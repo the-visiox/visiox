@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from teams.models import Team, TeamMember
+from teams.models import Invitation, Team, TeamMember
 
 User = get_user_model()
 
@@ -48,3 +48,17 @@ class InviteMemberSerializer(serializers.Serializer):
 
 class UpdateMemberRoleSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=['admin', 'member', 'viewer'])
+
+
+class SendInvitationSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    role = serializers.ChoiceField(choices=['admin', 'member', 'viewer'], default='member')
+
+
+class InvitationSerializer(serializers.ModelSerializer):
+    invited_by_username = serializers.CharField(source='invited_by.username', read_only=True)
+
+    class Meta:
+        model = Invitation
+        fields = ['id', 'email', 'role', 'status', 'invited_by_username', 'created_at', 'expires_at']
+        read_only_fields = fields
