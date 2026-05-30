@@ -3,6 +3,7 @@ import hashlib
 from django.utils import timezone
 from drf_spectacular.extensions import OpenApiAuthenticationExtension
 from rest_framework.authentication import BaseAuthentication
+from rest_framework.exceptions import AuthenticationFailed
 
 
 class APIKeyAuthentication(BaseAuthentication):
@@ -19,6 +20,9 @@ class APIKeyAuthentication(BaseAuthentication):
             api_key = APIKey.objects.select_related('user').get(key_hash=key_hash, is_active=True)
         except APIKey.DoesNotExist:
             return None
+
+        if api_key.expires_at and api_key.expires_at < timezone.now():
+            raise AuthenticationFailed('API key has expired.')
 
         api_key.last_used = timezone.now()
         api_key.save(update_fields=['last_used'])

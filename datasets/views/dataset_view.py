@@ -8,9 +8,11 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken
+
+from core.jwt_query_auth import JWTAuthQueryOrHeader
 
 from annotations.models import Annotation
 from annotations.serializers import AnnotationSerializer, JobAnnotationsReplaceSerializer
@@ -108,7 +110,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action == 'frame_image':
-            return [AllowAny()]
+            return [IsAuthenticated()]
         if self.action == 'destroy':
             return [HasPerm('datasets.delete_dataset')]
         if self.action in ('upload', 'upload_batch', 'delete_media'):
@@ -424,7 +426,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Failed to load browser data'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['get'], url_path=r'frames/(?P<frame_num>\d+)',
-            authentication_classes=[], permission_classes=[AllowAny])
+            authentication_classes=[JWTAuthQueryOrHeader], permission_classes=[IsAuthenticated])
     def frame_image(self, request, pk=None, frame_num=None):
         """Return a frame image (CVAT proxy, or VisioX Media when VISIOX_STANDALONE).
 

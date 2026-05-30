@@ -1,8 +1,19 @@
 # VisioX Platform — API Reference
 
-Base URL: `http://localhost:8000`  
-Default authentication: `Authorization: Bearer <access_token>` (JWT)  
+Base URL: `http://localhost:8000`
+
+**Authentication methods:**
+
+| Method | Header | Notes |
+|---|---|---|
+| JWT Bearer | `Authorization: Bearer <access_token>` | Default. Access token expires in 1 hour. |
+| API Key | `X-API-KEY: <raw key>` | Programmatic access. Key shown once at creation. |
+
+> **Frame image endpoints** (`/api/datasets/{id}/frames/{n}/`) dùng `AllowAny` — không cần auth. Truyền URL thẳng vào `<img src>` mà không cần header hay token.
+
 Default content-type: `application/json`
+
+**Interactive docs:** `http://localhost:8000/api/docs/` (Swagger) · `http://localhost:8000/api/redoc/`
 
 ---
 
@@ -17,6 +28,7 @@ Default content-type: `application/json`
 7. [Deployments](#7-deployments)
 8. [Billing](#8-billing)
 9. [Dataverse](#9-dataverse)
+10. [Error Responses](#error-responses)
 
 ---
 
@@ -277,6 +289,62 @@ Cập nhật role của thành viên.
 ```
 
 **Response `200`:** TeamMember object
+
+---
+
+### POST `/api/teams/{id}/send_invitation/`
+Gửi email mời user mới (chưa có tài khoản) vào team. **Permission required:** owner/admin
+
+**Request body:**
+```json
+{
+  "email": "newuser@example.com (required)",
+  "role": "admin | member | viewer (optional, default: member)"
+}
+```
+
+**Response `201`:**
+```json
+{
+  "id": 1,
+  "team": 1,
+  "email": "newuser@example.com",
+  "role": "member",
+  "status": "pending",
+  "expires_at": "2024-01-08T00:00:00Z",
+  "created_at": "2024-01-01T00:00:00Z"
+}
+```
+
+---
+
+### GET `/api/teams/{id}/invitations/`
+Lấy danh sách lời mời (pending + expired) của team.
+
+**Response `200`:** Array of Invitation objects
+
+---
+
+### DELETE `/api/teams/{id}/invitations/{invite_id}/`
+Huỷ lời mời.
+
+**Response `204`:** No content
+
+---
+
+### GET `/api/invitations/{token}/accept/`
+Chấp nhận lời mời bằng token trong email. **Auth required:** No (link-based)
+
+**Response `200`:**
+```json
+{
+  "team_id": 1,
+  "team_name": "Computer Vision Team",
+  "role": "member"
+}
+```
+
+**Response `400`:** Invitation expired or already used
 
 ---
 
@@ -1762,13 +1830,14 @@ Fork một public project vào team của mình. Sao chép toàn bộ classes, d
 ## Error Responses
 
 | Status | Meaning |
-|--------|---------|
-| `400` | Validation error — response body chứa chi tiết lỗi |
+|---|---|
+| `400` | Validation error — response body chứa chi tiết lỗi theo field |
 | `401` | Chưa xác thực hoặc token hết hạn |
 | `403` | Không có quyền truy cập |
 | `404` | Không tìm thấy resource |
-| `409` | Conflict (ví dụ: file đã tồn tại) |
-| `500` | Server error |
+| `409` | Conflict (ví dụ: file đã tồn tại trong dataset) |
+| `422` | Unprocessable entity — dữ liệu không hợp lệ |
+| `500` | Server error — kiểm tra Django logs |
 
 **Ví dụ lỗi validation `400`:**
 ```json
@@ -1778,9 +1847,62 @@ Fork một public project vào team của mình. Sao chép toàn bộ classes, d
 }
 ```
 
+**Ví dụ lỗi `401`:**
+```json
+{
+  "detail": "Authentication credentials were not provided."
+}
+```
+
 **Ví dụ lỗi `404`:**
 ```json
 {
   "detail": "Not found."
 }
+```
+
+---
+
+## Pagination
+
+Tất cả list endpoints đều hỗ trợ phân trang (`PageNumberPagination`, page size mặc định: 20).
+
+**Query params:**
+- `?page=<n>` — số trang (bắt đầu từ 1)
+- `?page_size=<n>` — số items mỗi trang (max: thường 100)
+
+**Response structure:**
+```json
+{
+  "count": 150,
+  "next": "http://localhost:8000/api/datasets/?page=2",
+  "previous": null,
+  "results": [...]
+}
+```
+
+---
+
+## Webhook Events
+
+Các events được gửi qua outbound webhooks (`POST /api/webhooks/`) với header `X-Visiox-Signature: <HMAC-SHA256>`.
+
+| Event | Trigger |
+|---|---|
+| `training.job.completed` | TrainingJob → completed |
+| `training.job.failed` | TrainingJob → failed |
+| `deployment.endpoint.started` | InferenceEndpoint → active |
+| `deployment.endpoint.stopped` | InferenceEndpoint → inactive |
+| `deployment.drift_alert.created` | DriftAlert created |
+| `billing.subscription.updated` | Subscription status changed |
+| `annotation.task.approved` | LabelingTask → approved |
+| `annotation.task.rejected` | LabelingTask → rejected |
+
+**Verify signature:**
+```python
+import hmac, hashlib
+
+def verify_signature(payload_body: bytes, secret: str, signature_header: str) -> bool:
+    expected = hmac.new(secret.encode(), payload_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_header)
 ```
