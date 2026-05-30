@@ -38,15 +38,22 @@ class MediaBulkDeleteSerializer(serializers.Serializer):
 
 class DatasetSerializer(serializers.ModelSerializer):
     media_count = serializers.SerializerMethodField()
+    annotated_count = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
 
     class Meta:
         model = Dataset
-        fields = ['id', 'project', 'name', 'description', 'version', 'media_count', 'thumbnail', 'cvat_task_id', 'created_at', 'updated_at']
+        fields = ['id', 'project', 'name', 'description', 'version', 'media_count', 'annotated_count', 'thumbnail', 'cvat_task_id', 'created_at', 'updated_at']
         read_only_fields = ['id', 'version', 'cvat_task_id', 'created_at', 'updated_at']
 
     def get_media_count(self, obj) -> int:
         return obj.media_files.count()
+
+    def get_annotated_count(self, obj) -> int:
+        return obj.media_files.filter(
+            annotations__isnull=False,
+            annotations__is_valid=True,
+        ).distinct().count()
 
     def get_thumbnail(self, obj) -> str | None:
         first = obj.media_files.filter(type='image').order_by('uploaded_at').first()
