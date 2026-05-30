@@ -400,14 +400,12 @@ class DatasetViewSet(viewsets.ModelViewSet):
     def browser(self, request, pk=None):
         """Return frame list, labels, and annotations for the data browser."""
         dataset = self.get_object()
-        if standalone_enabled():
+        if standalone_enabled() or not dataset.cvat_task_id:
             data = standalone_browser_payload(dataset)
             data['dataset_id'] = dataset.id
             data['dataset_name'] = dataset.name
             data['version'] = dataset.version
             return Response(data)
-        if not dataset.cvat_task_id:
-            return Response({'error': 'No CVAT task linked'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             project_id = dataset.project.cvat_project_id if dataset.project else None
             data = get_cvat_browser_data(dataset.cvat_task_id, project_id)
@@ -445,7 +443,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return HttpResponse(b'Unauthorized', status=401, content_type='text/plain')
 
         dataset = self.get_object()
-        if standalone_enabled():
+        if standalone_enabled() or not dataset.cvat_task_id:
             try:
                 media = image_media_for_frame(dataset, int(frame_num))
             except (TypeError, ValueError):
@@ -461,8 +459,6 @@ class DatasetViewSet(viewsets.ModelViewSet):
             response = HttpResponse(image_bytes, content_type=guess_content_type(media))
             response['Cache-Control'] = 'public, max-age=3600'
             return response
-        if not dataset.cvat_task_id:
-            return HttpResponse(b'No CVAT task linked', status=400, content_type='text/plain')
         try:
             quality = request.query_params.get('quality', 'compressed')
             image_bytes, content_type = get_cvat_frame_image(
