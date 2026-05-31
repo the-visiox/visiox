@@ -61,6 +61,83 @@ def _extract_image_dimensions(file):
         return None, None
 
 
+def _media_display_name(media) -> str:
+    if media.original_filename:
+        return media.original_filename
+    if media.file:
+        return media.file.name.rsplit('/', 1)[-1]
+    return f'media-{media.id}'
+
+
+def _build_pipelines(pre: dict, aug: dict):
+    """Build Albumentations preprocessing and augmentation pipelines from config dicts."""
+    import cv2
+    import albumentations as A
+
+    pre_transforms = []
+    if pre.get('resize') and pre.get('resize_width') and pre.get('resize_height'):
+        pre_transforms.append(A.Resize(height=int(pre['resize_height']), width=int(pre['resize_width'])))
+    if pre.get('grayscale'):
+        pre_transforms.append(A.ToGray(num_output_channels=3, p=1.0))
+    pre_pipeline = A.Compose(pre_transforms) if pre_transforms else None
+
+    aug_transforms = []
+    if aug.get('flip_h'):
+        aug_transforms.append(A.HorizontalFlip(p=1.0))
+    if aug.get('flip_v'):
+        aug_transforms.append(A.VerticalFlip(p=1.0))
+    if aug.get('rotate90'):
+        aug_transforms.append(A.RandomRotate90(p=1.0))
+    if float(aug.get('rotation', 0)) > 0:
+        aug_transforms.append(A.Rotate(limit=float(aug['rotation']), border_mode=cv2.BORDER_REFLECT_101, p=1.0))
+    if float(aug.get('shear', 0)) > 0:
+        aug_transforms.append(A.Affine(shear=(-float(aug['shear']), float(aug['shear'])), p=1.0))
+    brightness = float(aug.get('brightness', 0))
+    contrast = float(aug.get('contrast', 0))
+    if brightness > 0 or contrast > 0:
+        aug_transforms.append(A.RandomBrightnessContrast(brightness_limit=brightness, contrast_limit=contrast, p=1.0))
+    hue = float(aug.get('hue', 0))
+    saturation = float(aug.get('saturation', 0))
+    if hue > 0 or saturation > 0:
+        aug_transforms.append(A.HueSaturationValue(
+            hue_shift_limit=int(hue), sat_shift_limit=int(saturation), val_shift_limit=0, p=1.0,
+        ))
+    if float(aug.get('blur', 0)) > 0:
+        sigma = max(0.1, float(aug['blur']))
+        aug_transforms.append(A.GaussianBlur(blur_limit=(3, 3), sigma_limit=(sigma, sigma), p=1.0))
+    if float(aug.get('noise', 0)) > 0:
+        noise = float(aug['noise'])
+        aug_transforms.append(A.GaussNoise(std_range=(noise * 0.5, noise), p=1.0))
+    if float(aug.get('motion_blur', 0)) > 0:
+        k = max(3, int(aug['motion_blur']))
+        if k % 2 == 0:
+            k += 1
+        aug_transforms.append(A.MotionBlur(blur_limit=(k, k), p=1.0))
+    if aug.get('cutout'):
+        aug_transforms.append(A.CoarseDropout(num_holes_range=(4, 8), hole_height_range=(0.05, 0.15), hole_width_range=(0.05, 0.15), p=1.0))
+    aug_pipeline = A.Compose(aug_transforms) if aug_transforms else None
+
+    return pre_pipeline, aug_pipeline
+
+
+def _load_media_np(media, pre: dict, pre_pipeline) -> 'np.ndarray':
+    """Open a media file, apply EXIF orient + preprocessing pipeline, return numpy RGB array."""
+    import numpy as np
+    from PIL import Image, ImageOps
+
+    with media.file.open('rb') as f:
+        pil_img = Image.open(f).convert('RGB')
+        pil_img.load()
+
+    if pre.get('auto_orient'):
+        pil_img = ImageOps.exif_transpose(pil_img)
+
+    img_np = np.array(pil_img)
+    if pre_pipeline is not None:
+        img_np = pre_pipeline(image=img_np)['image']
+    return img_np
+
+
 def _media_name_exists(dataset: Dataset, name: str) -> bool:
     if not name:
         return False
@@ -422,6 +499,93 @@ class DatasetViewSet(viewsets.ModelViewSet):
         except Exception:
             logger.exception('Failed to get browser data for dataset %d', dataset.id)
             return Response({'error': 'Failed to load browser data'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='augment-preview')
+    def augment_preview(self, request, pk=None):
+        """Return base64 augmented previews for the first N images (preprocessing + augmentation)."""
+        import io, base64
+        import numpy as np
+        import cv2
+        import albumentations as A
+        from PIL import Image, ImageOps
+
+        dataset = self.get_object()
+        data = request.data
+        pre = data.get('preprocess', {})
+        aug = data.get('augment', {})
+        count = min(int(data.get('count', 6)), 12)
+
+        pre_pipeline, aug_pipeline = _build_pipelines(pre, aug)
+
+        media_list = list(ordered_image_media(dataset)[:count])
+        previews = []
+
+        for media in media_list:
+            try:
+                img_np = _load_media_np(media, pre, pre_pipeline)
+                if aug_pipeline is not None:
+                    img_np = aug_pipeline(image=img_np)['image']
+
+                buf = io.BytesIO()
+                Image.fromarray(img_np).save(buf, format='JPEG', quality=82)
+                b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+                name = _media_display_name(media)
+                previews.append({'media_id': media.id, 'name': name, 'augmented_url': f'data:image/jpeg;base64,{b64}'})
+            except Exception:
+                logger.exception('Failed to generate augment preview for media %d', media.id)
+
+        return Response({'previews': previews})
+
+    @action(detail=True, methods=['post'], url_path='augment-apply')
+    def augment_apply(self, request, pk=None):
+        """Generate augmented copies of all images and save as new Media records."""
+        import io
+        import numpy as np
+        import cv2
+        import albumentations as A
+        from PIL import Image, ImageOps
+        from django.core.files.base import ContentFile
+
+        dataset = self.get_object()
+        data = request.data
+        pre = data.get('preprocess', {})
+        aug = data.get('augment', {})
+        multiplier = max(1, min(int(data.get('multiplier', 1)), 5))
+
+        pre_pipeline, aug_pipeline = _build_pipelines(pre, aug)
+        media_list = list(ordered_image_media(dataset))
+        generated = 0
+
+        for media in media_list:
+            try:
+                base_np = _load_media_np(media, pre, pre_pipeline)
+                original_name = _media_display_name(media)
+                ext = original_name.rsplit('.', 1)[-1] if '.' in original_name else 'jpg'
+
+                for i in range(multiplier):
+                    img_np = base_np.copy()
+                    if aug_pipeline is not None:
+                        img_np = aug_pipeline(image=img_np)['image']
+
+                    pil_out = Image.fromarray(img_np)
+                    buf = io.BytesIO()
+                    pil_out.save(buf, format='JPEG', quality=88)
+                    buf.seek(0)
+
+                    aug_name = f'aug_{i + 1}_{original_name}'
+                    new_media = Media(
+                        dataset=dataset,
+                        type='image',
+                        original_filename=aug_name,
+                        width=pil_out.width,
+                        height=pil_out.height,
+                    )
+                    new_media.file.save(f'{aug_name}.jpg', ContentFile(buf.read()), save=True)
+                    generated += 1
+            except Exception:
+                logger.exception('Failed to apply augmentation for media %d', media.id)
+
+        return Response({'generated': generated, 'total': len(media_list) * multiplier})
 
     @action(detail=True, methods=['get'], url_path=r'frames/(?P<frame_num>\d+)',
             authentication_classes=[JWTAuthQueryOrHeader], permission_classes=[IsAuthenticated])
