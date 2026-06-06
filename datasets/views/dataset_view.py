@@ -190,7 +190,9 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         if self.action == 'destroy':
             return [HasPerm('datasets.delete_dataset')]
-        if self.action in ('upload', 'upload_batch', 'delete_media'):
+        if self.action in ('upload', 'upload_batch'):
+            return [HasPerm('datasets.upload_media')]
+        if self.action == 'media' and self.request.method == 'DELETE':
             return [HasPerm('datasets.upload_media')]
         return super().get_permissions()
 
@@ -222,7 +224,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
     # ── Custom actions ───────────────────────────────────────────────────────
 
-    @action(detail=True, methods=['get'])
+    @action(detail=True, methods=['get'], url_path='annotate-url')
     def annotate_url(self, request, pk=None):
         dataset = self.get_object()
         if standalone_enabled():
@@ -243,7 +245,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
         url = get_cvat_task_url(dataset.cvat_task_id)
         return Response({'url': url})
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], url_path='cvat-sync')
     def sync_cvat(self, request, pk=None):
         dataset = self.get_object()
         if standalone_enabled():
@@ -298,55 +300,50 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
         return Response(result)
 
-    @action(detail=True, methods=['get'])
+    @action(detail=True, methods=['get', 'delete'])
     def media(self, request, pk=None):
         dataset = self.get_object()
+
+        if request.method == 'DELETE':
+            serializer = MediaBulkDeleteSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            ids = serializer.validated_data['media_ids']
+            qs = Media.objects.filter(dataset=dataset, id__in=ids)
+            found_ids = set(qs.values_list('id', flat=True))
+            missing = sorted(set(ids) - found_ids)
+            if missing:
+                return Response(
+                    {'detail': 'Some media ids are not in this dataset.', 'invalid_ids': missing},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not standalone_enabled() and dataset.cvat_task_id:
+                ordered_images = list(
+                    dataset.media_files.filter(type='image').order_by('uploaded_at', 'id'),
+                )
+                id_to_frame_index = {m.id: i for i, m in enumerate(ordered_images)}
+                frame_indices = sorted({id_to_frame_index[mid] for mid in ids if mid in id_to_frame_index})
+                if frame_indices:
+                    try:
+                        merge_cvat_deleted_frames(dataset.cvat_task_id, frame_indices)
+                    except Exception:
+                        logger.exception(
+                            'CVAT data/meta update failed for task %s (dataset %s); continuing with DB delete',
+                            dataset.cvat_task_id,
+                            dataset.id,
+                        )
+
+            deleted_ids: list[int] = []
+            for m in list(qs):
+                if m.file:
+                    m.file.delete(save=False)
+                deleted_ids.append(m.id)
+                m.delete()
+            return Response({'deleted': len(deleted_ids), 'ids': deleted_ids})
+
         media_qs = dataset.media_files.all()
         serializer = MediaSerializer(media_qs, many=True, context={'request': request})
         return Response(serializer.data)
-
-    @action(detail=True, methods=['post'], url_path='delete-media')
-    def delete_media(self, request, pk=None):
-        """Delete dataset media files by id (removes stored files and DB rows)."""
-        dataset = self.get_object()
-        serializer = MediaBulkDeleteSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        ids = serializer.validated_data['media_ids']
-        qs = Media.objects.filter(dataset=dataset, id__in=ids)
-        found_ids = set(qs.values_list('id', flat=True))
-        missing = sorted(set(ids) - found_ids)
-        if missing:
-            return Response(
-                {'detail': 'Some media ids are not in this dataset.', 'invalid_ids': missing},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # CVAT task must hide the same frame indices or the browser (CVAT-backed) still shows them.
-        if not standalone_enabled() and dataset.cvat_task_id:
-            ordered_images = list(
-                dataset.media_files.filter(type='image').order_by('uploaded_at', 'id'),
-            )
-            id_to_frame_index = {m.id: i for i, m in enumerate(ordered_images)}
-            frame_indices = sorted({id_to_frame_index[mid] for mid in ids if mid in id_to_frame_index})
-            if frame_indices:
-                try:
-                    merge_cvat_deleted_frames(dataset.cvat_task_id, frame_indices)
-                except Exception:
-                    # Still delete Media below so the API is usable when CVAT is down or misconfigured.
-                    # Images may still appear until CVAT sync or manual task fix.
-                    logger.exception(
-                        'CVAT data/meta update failed for task %s (dataset %s); continuing with DB delete',
-                        dataset.cvat_task_id,
-                        dataset.id,
-                    )
-
-        deleted_ids: list[int] = []
-        for media in list(qs):
-            if media.file:
-                media.file.delete(save=False)
-            deleted_ids.append(media.id)
-            media.delete()
-        return Response({'deleted': len(deleted_ids), 'ids': deleted_ids})
 
     @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload(self, request, pk=None):
@@ -466,7 +463,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], url_path='versions')
     def new_version(self, request, pk=None):
         dataset = self.get_object()
         dataset.version += 1
@@ -500,7 +497,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
             logger.exception('Failed to get browser data for dataset %d', dataset.id)
             return Response({'error': 'Failed to load browser data'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    @action(detail=True, methods=['post'], url_path='augment-preview')
+    @action(detail=True, methods=['post'], url_path='augmentations/preview')
     def augment_preview(self, request, pk=None):
         """Return base64 augmented previews for the first N images (preprocessing + augmentation)."""
         import io, base64
@@ -536,7 +533,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
         return Response({'previews': previews})
 
-    @action(detail=True, methods=['post'], url_path='augment-apply')
+    @action(detail=True, methods=['post'], url_path='augmentations')
     def augment_apply(self, request, pk=None):
         """Generate augmented copies of all images and save as new Media records."""
         import io

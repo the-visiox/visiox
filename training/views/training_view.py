@@ -35,37 +35,36 @@ class TrainingJobViewSet(viewsets.ModelViewSet):
             project__team__members__user=user
         ).distinct().select_related('architecture', 'created_by', 'project', 'dataset')
 
-    def get_permissions(self):
-        if self.action in ('start', 'stop'):
-            return [HasPerm('training.start_job')]
-        return super().get_permissions()
-
-    @extend_schema(responses={200: TrainingJobSerializer})
-    @action(detail=True, methods=['post'])
-    def start(self, request, pk=None):
+    def partial_update(self, request, *args, **kwargs):
         job = self.get_object()
-        if job.status not in ('pending', 'failed'):
-            return Response(
-                {'error': f'Cannot start a job with status "{job.status}".'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        job.status = 'queued'
-        job.save(update_fields=['status'])
-        task = run_training_job.delay(job.id)
-        job.celery_task_id = task.id
-        job.save(update_fields=['celery_task_id'])
-        return Response(TrainingJobSerializer(job).data)
+        new_status = request.data.get('status')
 
-    @extend_schema(responses={200: TrainingJobSerializer})
-    @action(detail=True, methods=['post'])
-    def stop(self, request, pk=None):
-        from celery.result import AsyncResult
-        job = self.get_object()
-        if job.celery_task_id:
-            AsyncResult(job.celery_task_id).revoke(terminate=True)
-        job.status = 'cancelled'
-        job.save(update_fields=['status'])
-        return Response(TrainingJobSerializer(job).data)
+        if new_status == 'queued':
+            if not request.user.has_perm('training.start_job'):
+                return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+            if job.status not in ('pending', 'failed'):
+                return Response(
+                    {'error': f'Cannot start a job with status "{job.status}".'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            job.status = 'queued'
+            job.save(update_fields=['status'])
+            task = run_training_job.delay(job.id)
+            job.celery_task_id = task.id
+            job.save(update_fields=['celery_task_id'])
+            return Response(TrainingJobSerializer(job).data)
+
+        if new_status == 'cancelled':
+            if not request.user.has_perm('training.start_job'):
+                return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+            from celery.result import AsyncResult
+            if job.celery_task_id:
+                AsyncResult(job.celery_task_id).revoke(terminate=True)
+            job.status = 'cancelled'
+            job.save(update_fields=['status'])
+            return Response(TrainingJobSerializer(job).data)
+
+        return super().partial_update(request, *args, **kwargs)
 
     @extend_schema(responses={200: ExperimentSerializer(many=True)})
     @action(detail=True, methods=['get'])

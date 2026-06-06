@@ -11,19 +11,19 @@ urlpatterns = [
     path('silk/', include('silk.urls', namespace='silk')),
 
     # Auth
-    path('api/auth/', include('authentication.urls')),
+    path('api/v1/auth/', include('authentication.urls')),
 
     # Core resources
-    path('api/', include('teams.urls')),
-    path('api/', include('projects.urls')),
-    path('api/', include('datasets.urls')),
-    path('api/', include('annotations.urls')),
-    path('api/', include('dataverse.urls')),
+    path('api/v1/', include('teams.urls')),
+    path('api/v1/', include('projects.urls')),
+    path('api/v1/', include('datasets.urls')),
+    path('api/v1/', include('annotations.urls')),
+    path('api/v1/', include('dataverse.urls')),
 
     # Phase 3–5
-    path('api/', include('training.urls')),
-    path('api/', include('deployments.urls')),
-    path('api/', include('billing.urls')),
+    path('api/v1/', include('training.urls')),
+    path('api/v1/', include('deployments.urls')),
+    path('api/v1/', include('billing.urls')),
 
     # OpenAPI
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
