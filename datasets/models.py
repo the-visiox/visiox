@@ -1,4 +1,30 @@
+import re
+
 from django.db import models
+
+
+def _slug(name: str) -> str:
+    """'Factory Floor v2' -> 'factory-floor-v2' (max 40 chars)"""
+    return re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')[:40]
+
+
+def media_upload_path(instance, filename):
+    """
+    orgs/{team_id}_{team_slug}/projects/{project_id}_{project_slug}/
+        datasets/{dataset_id}_{dataset_slug}/v{version}/{category}/{filename}
+
+    Set instance._upload_category = 'augmented' before saving augmented images.
+    """
+    category = getattr(instance, '_upload_category', 'raw')
+    team = instance.dataset.project.team
+    project = instance.dataset.project
+    dataset = instance.dataset
+
+    team_folder    = f"{team.id}_{_slug(team.name)}"
+    project_folder = f"{project.id}_{_slug(project.name)}"
+    dataset_folder = f"{dataset.id}_{_slug(dataset.name)}"
+
+    return f"orgs/{team_folder}/projects/{project_folder}/datasets/{dataset_folder}/v{dataset.version}/{category}/{filename}"
 
 
 class Dataset(models.Model):
@@ -38,7 +64,7 @@ class Media(models.Model):
         related_name='media_files'
     )
     type = models.CharField(max_length=50, choices=MEDIA_TYPE_CHOICES)
-    file = models.FileField(upload_to='media/%Y/%m/%d/')
+    file = models.FileField(upload_to=media_upload_path)
     original_filename = models.CharField(max_length=255, blank=True)
     width = models.IntegerField(null=True, blank=True)
     height = models.IntegerField(null=True, blank=True)

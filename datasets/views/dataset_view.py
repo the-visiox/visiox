@@ -179,7 +179,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
     queryset = Dataset.objects.none()
 
     def get_queryset(self):
-        queryset = Dataset.objects.all().select_related('project')
+        queryset = Dataset.objects.all().select_related('project__team')
         project_id = self.request.query_params.get('project')
         if project_id:
             queryset = queryset.filter(project_id=project_id)
@@ -577,6 +577,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
                         width=pil_out.width,
                         height=pil_out.height,
                     )
+                    new_media._upload_category = 'augmented'
                     new_media.file.save(f'{aug_name}.jpg', ContentFile(buf.read()), save=True)
                     generated += 1
             except Exception:

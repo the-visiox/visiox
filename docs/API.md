@@ -9,7 +9,7 @@ Base URL: `http://localhost:8000`
 | JWT Bearer | `Authorization: Bearer <access_token>` | Default. Access token expires in 1 hour. |
 | API Key | `X-API-KEY: <raw key>` | Programmatic access. Key shown once at creation. |
 
-> **Frame image endpoints** (`/api/datasets/{id}/frames/{n}/`) dùng `AllowAny` — không cần auth. Truyền URL thẳng vào `<img src>` mà không cần header hay token.
+> **Frame image endpoints** (`/api/datasets/{id}/frames/{n}/`) use `AllowAny` — no auth required. Pass the URL directly into `<img src>` without headers or tokens.
 
 Default content-type: `application/json`
 
@@ -35,7 +35,7 @@ Default content-type: `application/json`
 ## 1. Authentication
 
 ### POST `/api/auth/login/`
-Đăng nhập bằng username/password, trả về JWT tokens.
+Login with username/password, returns JWT tokens.
 
 **Auth required:** No
 
@@ -63,7 +63,7 @@ Default content-type: `application/json`
 ---
 
 ### POST `/api/auth/register/`
-Đăng ký tài khoản mới.
+Register a new account.
 
 **Auth required:** No
 
@@ -91,7 +91,7 @@ Default content-type: `application/json`
 ---
 
 ### POST `/api/auth/logout/`
-Vô hiệu hoá refresh token (blacklist).
+Invalidate the refresh token (blacklist).
 
 **Auth required:** No
 
@@ -107,7 +107,7 @@ Vô hiệu hoá refresh token (blacklist).
 ---
 
 ### GET `/api/auth/me/`
-Lấy thông tin user hiện tại.
+Get current user information.
 
 **Auth required:** Yes
 
@@ -126,7 +126,7 @@ Lấy thông tin user hiện tại.
 ---
 
 ### POST `/api/auth/oauth/`
-Đăng nhập bằng OAuth (Google hoặc GitHub).
+Login via OAuth (Google or GitHub).
 
 **Auth required:** No
 
@@ -134,7 +134,7 @@ Lấy thông tin user hiện tại.
 ```json
 {
   "provider": "google | github",
-  "code": "string (authorization code từ OAuth provider)",
+  "code": "string (authorization code from OAuth provider)",
   "redirect_uri": "http://localhost:3000/auth/callback"
 }
 ```
@@ -154,7 +154,7 @@ Lấy thông tin user hiện tại.
 ---
 
 ### POST `/api/auth/token/refresh/`
-Làm mới access token bằng refresh token.
+Refresh the access token using a refresh token.
 
 **Auth required:** No
 
@@ -177,7 +177,7 @@ Làm mới access token bằng refresh token.
 ## 2. Teams
 
 ### GET `/api/teams/`
-Lấy danh sách teams mà user là thành viên.
+Get list of teams the current user is a member of.
 
 **Response `200`:**
 ```json
@@ -196,7 +196,7 @@ Lấy danh sách teams mà user là thành viên.
 ---
 
 ### POST `/api/teams/`
-Tạo team mới. User tạo tự động trở thành owner và thành viên với role `owner`.
+Create a new team. The creator is automatically set as owner with role `owner`.
 
 **Request body:**
 ```json
@@ -210,14 +210,14 @@ Tạo team mới. User tạo tự động trở thành owner và thành viên v�
 ---
 
 ### GET `/api/teams/{id}/`
-Lấy chi tiết team.
+Get team details.
 
 **Response `200`:** Team object
 
 ---
 
 ### PUT `/api/teams/{id}/`
-Cập nhật team (yêu cầu owner hoặc admin).
+Update team (requires owner or admin role).
 
 **Request body:**
 ```json
@@ -231,14 +231,14 @@ Cập nhật team (yêu cầu owner hoặc admin).
 ---
 
 ### DELETE `/api/teams/{id}/`
-Xoá team. **Permission required:** `teams.delete_team`
+Delete team. **Permission required:** `teams.delete_team`
 
 **Response `204`:** No content
 
 ---
 
 ### GET `/api/teams/{id}/members/`
-Lấy danh sách thành viên của team.
+Get the list of team members.
 
 **Response `200`:**
 ```json
@@ -257,7 +257,7 @@ Lấy danh sách thành viên của team.
 ---
 
 ### POST `/api/teams/{id}/invite/`
-Mời user vào team. **Permission required:** `teams.invite_member` + owner/admin
+Invite a user to the team. **Permission required:** `teams.invite_member` + owner/admin
 
 **Request body:**
 ```json
@@ -272,14 +272,14 @@ Mời user vào team. **Permission required:** `teams.invite_member` + owner/adm
 ---
 
 ### DELETE `/api/teams/{id}/members/{member_id}/`
-Xoá thành viên khỏi team (không thể xoá owner).
+Remove a member from the team (cannot remove the owner).
 
 **Response `204`:** No content
 
 ---
 
 ### PATCH `/api/teams/{id}/members/{member_id}/role/`
-Cập nhật role của thành viên.
+Update a member's role.
 
 **Request body:**
 ```json
@@ -293,7 +293,7 @@ Cập nhật role của thành viên.
 ---
 
 ### POST `/api/teams/{id}/send_invitation/`
-Gửi email mời user mới (chưa có tài khoản) vào team. **Permission required:** owner/admin
+Send an email invitation to a new user (without an existing account). **Permission required:** owner/admin
 
 **Request body:**
 ```json
@@ -319,21 +319,21 @@ Gửi email mời user mới (chưa có tài khoản) vào team. **Permission re
 ---
 
 ### GET `/api/teams/{id}/invitations/`
-Lấy danh sách lời mời (pending + expired) của team.
+Get the list of invitations (pending + expired) for the team.
 
 **Response `200`:** Array of Invitation objects
 
 ---
 
 ### DELETE `/api/teams/{id}/invitations/{invite_id}/`
-Huỷ lời mời.
+Cancel an invitation.
 
 **Response `204`:** No content
 
 ---
 
 ### GET `/api/invitations/{token}/accept/`
-Chấp nhận lời mời bằng token trong email. **Auth required:** No (link-based)
+Accept an invitation via the token in the email. **Auth required:** No (link-based)
 
 **Response `200`:**
 ```json
@@ -351,10 +351,10 @@ Chấp nhận lời mời bằng token trong email. **Auth required:** No (link-
 ## 3. Projects
 
 ### GET `/api/projects/`
-Lấy danh sách projects.
+Get list of projects.
 
 **Query params:**
-- `search` — tìm theo tên hoặc description
+- `search` — search by name or description
 - `ordering` — `created_at`, `updated_at`, `name`
 
 **Response `200`:**
@@ -370,7 +370,7 @@ Lấy danh sách projects.
     "name": "string",
     "task_type": "image_classification | object_detection | semantic_segmentation | instance_segmentation | keypoint_detection | video_annotation",
     "description": "string",
-    "thumbnail": "http://... (URL ảnh đầu tiên hoặc null)",
+    "thumbnail": "http://... (presigned MinIO URL of first image, or null)",
     "cvat_project_id": null,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
@@ -381,7 +381,7 @@ Lấy danh sách projects.
 ---
 
 ### POST `/api/projects/`
-Tạo project mới. User tự động trở thành owner.
+Create a new project. The creator is automatically set as owner.
 
 **Request body:**
 ```json
@@ -398,24 +398,24 @@ Tạo project mới. User tự động trở thành owner.
 ---
 
 ### GET `/api/projects/{id}/`
-Lấy chi tiết project.
+Get project details.
 
 ---
 
 ### PUT `/api/projects/{id}/`
-Cập nhật project.
+Update project.
 
-**Request body:** Project fields (tất cả required)
+**Request body:** Project fields (all required)
 
 ---
 
 ### PATCH `/api/projects/{id}/`
-Cập nhật một phần project.
+Partially update a project.
 
 ---
 
 ### DELETE `/api/projects/{id}/`
-Xoá project. **Permission required:** `projects.delete_project`
+Delete project. **Permission required:** `projects.delete_project`
 
 **Response `204`:** No content
 
@@ -424,10 +424,10 @@ Xoá project. **Permission required:** `projects.delete_project`
 ## 4. Datasets
 
 ### GET `/api/datasets/`
-Lấy danh sách datasets.
+Get list of datasets.
 
 **Query params:**
-- `project` — lọc theo project ID
+- `project` — filter by project ID
 
 **Response `200`:**
 ```json
@@ -439,7 +439,7 @@ Lấy danh sách datasets.
     "description": "string",
     "version": 1,
     "media_count": 100,
-    "thumbnail": "http://... hoặc null",
+    "thumbnail": "http://... (presigned MinIO URL or null)",
     "cvat_task_id": null,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
@@ -450,7 +450,7 @@ Lấy danh sách datasets.
 ---
 
 ### POST `/api/datasets/`
-Tạo dataset mới.
+Create a new dataset.
 
 **Request body:**
 ```json
@@ -466,24 +466,24 @@ Tạo dataset mới.
 ---
 
 ### GET `/api/datasets/{id}/`
-Lấy chi tiết dataset.
+Get dataset details.
 
 ---
 
 ### PUT `/api/datasets/{id}/`
-Cập nhật dataset.
+Update dataset.
 
 ---
 
 ### DELETE `/api/datasets/{id}/`
-Xoá dataset. **Permission required:** `datasets.delete_dataset`
+Delete dataset. **Permission required:** `datasets.delete_dataset`
 
 **Response `204`:** No content
 
 ---
 
 ### GET `/api/datasets/{id}/media/`
-Lấy danh sách media files trong dataset.
+Get list of media files in a dataset.
 
 **Response `200`:**
 ```json
@@ -492,8 +492,8 @@ Lấy danh sách media files trong dataset.
     "id": 1,
     "dataset": 1,
     "type": "image | video",
-    "file": "string (file path)",
-    "file_url": "http://... (absolute URL)",
+    "file": "string (MinIO object key, e.g. orgs/1_my-team/projects/1_my-project/datasets/1_dataset/v1/raw/photo.jpg)",
+    "file_url": "http://... (presigned MinIO URL valid ~1 hour; or /media/... path when USE_MINIO=False)",
     "original_filename": "photo.jpg",
     "width": 1920,
     "height": 1080,
@@ -507,24 +507,24 @@ Lấy danh sách media files trong dataset.
 ---
 
 ### POST `/api/datasets/{id}/upload/`
-Upload một file vào dataset. **Content-Type:** `multipart/form-data`
+Upload a single file to a dataset. **Content-Type:** `multipart/form-data`
 
 **Permission required:** `datasets.upload_media`
 
 **Request body (form-data):**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `file` | file | Yes | File cần upload |
-| `type` | string | Yes | `image` hoặc `video` |
-| `metadata` | JSON | No | Metadata bổ sung |
+| `file` | file | Yes | File to upload |
+| `type` | string | Yes | `image` or `video` |
+| `metadata` | JSON | No | Additional metadata |
 
 **Response `201`:** Media object  
-**Response `409`:** File đã tồn tại (trùng tên)
+**Response `409`:** File already exists (duplicate name)
 
 ---
 
 ### POST `/api/datasets/{id}/upload-batch/`
-Upload nhiều files cùng lúc (tối đa 100). **Content-Type:** `multipart/form-data`
+Upload multiple files at once (max 100). **Content-Type:** `multipart/form-data`
 
 **Permission required:** `datasets.upload_media`
 
@@ -540,7 +540,7 @@ Upload nhiều files cùng lúc (tối đa 100). **Content-Type:** `multipart/fo
 ---
 
 ### POST `/api/datasets/{id}/delete-media/`
-Xoá nhiều media files.
+Delete multiple media files.
 
 **Permission required:** `datasets.upload_media`
 
@@ -562,7 +562,7 @@ Xoá nhiều media files.
 ---
 
 ### GET `/api/datasets/{id}/stats/`
-Lấy thống kê dataset (bao gồm CVAT task info).
+Get dataset statistics (including CVAT task info).
 
 **Response `200`:**
 ```json
@@ -582,7 +582,7 @@ Lấy thống kê dataset (bao gồm CVAT task info).
 ---
 
 ### GET `/api/datasets/{id}/browser/`
-Lấy dữ liệu CVAT browser (frames, labels, annotations).
+Get CVAT browser data (frames, labels, annotations).
 
 **Response `200`:**
 ```json
@@ -599,26 +599,26 @@ Lấy dữ liệu CVAT browser (frames, labels, annotations).
 ---
 
 ### GET `/api/datasets/{id}/frames/{frame_num}/`
-Lấy ảnh của frame theo số thứ tự (0-based).
+Get the image for a frame by index (0-based).
 
 **Query params:**
-- `token` — JWT token (cho `<img>` tags)
-- `quality` — `compressed` hoặc `original` (CVAT mode)
+- `token` — JWT token (for `<img>` tags)
+- `quality` — `compressed` or `original` (CVAT mode)
 
-**Auth required:** No (dùng `?token=` query param)  
+**Auth required:** No (use `?token=` query param)  
 **Response `200`:** Binary image data
 
 ---
 
 ### GET `/api/datasets/{id}/frames/{frame_num}/annotations/`
-Lấy annotations của frame.
+Get annotations for a frame.
 
 **Response `200`:** Array of Annotation objects
 
 ---
 
 ### PUT `/api/datasets/{id}/frames/{frame_num}/annotations/`
-Lưu annotations cho frame (ghi đè toàn bộ).
+Save annotations for a frame (full overwrite).
 
 **Request body:**
 ```json
@@ -640,7 +640,7 @@ Lưu annotations cho frame (ghi đè toàn bộ).
 ---
 
 ### GET `/api/datasets/{id}/annotate_url/`
-Lấy URL để mở annotation trực tiếp trong CVAT.
+Get URL to open the dataset directly in CVAT for annotation.
 
 **Response `200`:**
 ```json
@@ -652,7 +652,7 @@ Lấy URL để mở annotation trực tiếp trong CVAT.
 ---
 
 ### POST `/api/datasets/{id}/sync_cvat/`
-Đồng bộ annotations từ CVAT về database.
+Sync annotations from CVAT to the database.
 
 **Response `200`:**
 ```json
@@ -667,14 +667,14 @@ Lấy URL để mở annotation trực tiếp trong CVAT.
 ---
 
 ### POST `/api/datasets/{id}/new_version/`
-Tăng version của dataset.
+Increment the dataset version.
 
 **Response `200`:** Updated Dataset object
 
 ---
 
 ### POST `/api/datasets/repair-cvat/`
-Sửa các datasets bị mất liên kết CVAT task.
+Repair datasets that lost their CVAT task link.
 
 **Response `200`:**
 ```json
@@ -688,7 +688,7 @@ Sửa các datasets bị mất liên kết CVAT task.
 ---
 
 ### POST `/api/datasets/cvat-webhook/`
-Nhận webhook events từ CVAT. **Auth required:** No
+Receive webhook events from CVAT. **Auth required:** No
 
 **Request body:**
 ```json
@@ -702,22 +702,22 @@ Nhận webhook events từ CVAT. **Auth required:** No
 ---
 
 ### GET `/api/datasets/{dataset_id}/export/`
-Export annotations sang định dạng khác.
+Export annotations to other formats.
 
 **Query params:**
 - `format` — `coco` (default), `yolo`, `voc`
 
-**Response `200`:** Binary file (JSON hoặc ZIP)
+**Response `200`:** Binary file (JSON or ZIP)
 
 ---
 
 ## 5. Annotations
 
 ### GET `/api/classes/`
-Lấy danh sách class labels.
+Get list of class labels.
 
 **Query params:**
-- `project` — lọc theo project ID
+- `project` — filter by project ID
 
 **Response `200`:**
 ```json
@@ -737,7 +737,7 @@ Lấy danh sách class labels.
 ---
 
 ### POST `/api/classes/`
-Tạo class label mới.
+Create a new class label.
 
 **Request body:**
 ```json
@@ -754,28 +754,28 @@ Tạo class label mới.
 ---
 
 ### GET `/api/classes/{id}/`
-Lấy chi tiết class.
+Get class details.
 
 ---
 
 ### PUT/PATCH `/api/classes/{id}/`
-Cập nhật class.
+Update class.
 
 ---
 
 ### DELETE `/api/classes/{id}/`
-Xoá class.
+Delete class.
 
 **Response `204`:** No content
 
 ---
 
 ### GET `/api/annotations/`
-Lấy danh sách annotations (lọc theo team membership).
+Get list of annotations (filtered by team membership).
 
 **Query params:**
-- `media` — lọc theo media ID
-- `type` — lọc theo loại annotation
+- `media` — filter by media ID
+- `type` — filter by annotation type
 
 **Response `200`:**
 ```json
@@ -790,7 +790,7 @@ Lấy danh sách annotations (lọc theo team membership).
     "type": "rectangle | polygon | polyline | points | cuboid | tag",
     "data": {},
     "frame": 0,
-    "track_id": "uuid hoặc null",
+    "track_id": "uuid or null",
     "is_valid": true,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
@@ -801,7 +801,7 @@ Lấy danh sách annotations (lọc theo team membership).
 ---
 
 ### POST `/api/annotations/`
-Tạo một annotation.
+Create a single annotation.
 
 **Request body:**
 ```json
@@ -820,7 +820,7 @@ Tạo một annotation.
 ---
 
 ### POST `/api/annotations/bulk/`
-Tạo nhiều annotations cùng lúc.
+Create multiple annotations at once.
 
 **Request body:**
 ```json
@@ -836,7 +836,7 @@ Tạo nhiều annotations cùng lúc.
 ---
 
 ### DELETE `/api/annotations/bulk-delete/`
-Xoá nhiều annotations.
+Delete multiple annotations.
 
 **Request body:**
 ```json
@@ -850,14 +850,14 @@ Xoá nhiều annotations.
 ---
 
 ### GET `/api/media/{media_id}/annotations/`
-Lấy tất cả annotations của một media item.
+Get all annotations for a media item.
 
 **Response `200`:** Array of Annotation objects
 
 ---
 
 ### PUT `/api/media/{media_id}/annotations/`
-Lưu annotations cho media (ghi đè toàn bộ — full snapshot).
+Save annotations for a media item (full overwrite — snapshot).
 
 **Request body:**
 ```json
@@ -879,7 +879,7 @@ Lưu annotations cho media (ghi đè toàn bộ — full snapshot).
 ---
 
 ### GET `/api/media/{media_id}/label-profile/`
-Lấy label profile (danh sách labels đang dùng) của media.
+Get label profile (list of labels in use) for a media item.
 
 **Response `200`:**
 ```json
@@ -893,7 +893,7 @@ Lấy label profile (danh sách labels đang dùng) của media.
 ---
 
 ### PUT `/api/media/{media_id}/label-profile/`
-Lưu label profile cho media.
+Save label profile for a media item.
 
 **Request body:**
 ```json
@@ -909,14 +909,14 @@ Lưu label profile cho media.
 ---
 
 ### GET `/api/datasets/{dataset_id}/frames/{frame_num}/label-profile/`
-Lấy label profile của frame.
+Get label profile for a frame.
 
 **Response `200`:** `{ "labels": [...] }`
 
 ---
 
 ### PUT `/api/datasets/{dataset_id}/frames/{frame_num}/label-profile/`
-Lưu label profile cho frame.
+Save label profile for a frame.
 
 **Request body:** `{ "labels": [...] }`
 
@@ -925,7 +925,7 @@ Lưu label profile cho frame.
 ---
 
 ### GET `/api/media/{media_id}/quality/`
-Lấy metrics chất lượng annotation (inter-annotator agreement) cho một media.
+Get annotation quality metrics (inter-annotator agreement) for a media item.
 
 **Response `200`:**
 ```json
@@ -938,7 +938,7 @@ Lấy metrics chất lượng annotation (inter-annotator agreement) cho một m
 ---
 
 ### GET `/api/datasets/{dataset_id}/quality/`
-Lấy metrics chất lượng tổng hợp cho toàn dataset.
+Get aggregated annotation quality metrics for an entire dataset.
 
 **Response `200`:**
 ```json
@@ -955,8 +955,8 @@ Lấy metrics chất lượng tổng hợp cho toàn dataset.
 
 ---
 
-### GET `/api/tasks/` hoặc `/api/jobs/`
-Lấy danh sách labeling tasks.
+### GET `/api/tasks/` or `/api/jobs/`
+Get list of labeling tasks.
 
 **Query params:**
 - `status` — `pending | in_progress | completed | review | approved | rejected`
@@ -981,7 +981,7 @@ Lấy danh sách labeling tasks.
 ---
 
 ### POST `/api/tasks/`
-Tạo labeling task.
+Create a labeling task.
 
 **Request body:**
 ```json
@@ -995,14 +995,14 @@ Tạo labeling task.
 ---
 
 ### GET `/api/tasks/{id}/annotations/`
-Lấy annotations của task.
+Get annotations for a task.
 
 **Response `200`:** Array of Annotation objects
 
 ---
 
 ### PATCH `/api/tasks/{id}/annotations/`
-Lưu annotations cho task.
+Save annotations for a task.
 
 **Request body:**
 ```json
@@ -1016,7 +1016,7 @@ Lưu annotations cho task.
 ---
 
 ### GET `/api/tasks/{id}/issues/`
-Lấy danh sách issues của task.
+Get list of issues for a task.
 
 **Response `200`:**
 ```json
@@ -1026,7 +1026,7 @@ Lấy danh sách issues của task.
     "task": 1,
     "author": 1,
     "author_username": "string",
-    "body": "Bounding box không chính xác",
+    "body": "Bounding box is inaccurate",
     "created_at": "2024-01-01T00:00:00Z"
   }
 ]
@@ -1035,7 +1035,7 @@ Lấy danh sách issues của task.
 ---
 
 ### POST `/api/tasks/{id}/issues/`
-Tạo issue cho task.
+Create an issue for a task.
 
 **Request body:**
 ```json
@@ -1049,42 +1049,42 @@ Tạo issue cho task.
 ---
 
 ### POST `/api/tasks/{id}/start/`
-Bắt đầu task (pending → in_progress), gán cho user hiện tại.
+Start a task (pending → in_progress), assigned to the current user.
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
 ### POST `/api/tasks/{id}/complete/`
-Hoàn thành task (in_progress → completed).
+Complete a task (in_progress → completed).
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
 ### POST `/api/tasks/{id}/submit_for_review/`
-Gửi task để review (completed → review).
+Submit a task for review (completed → review).
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
 ### POST `/api/tasks/{id}/approve/`
-Phê duyệt task (review → approved).
+Approve a task (review → approved).
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
 ### POST `/api/tasks/{id}/reject/`
-Từ chối task (review → rejected).
+Reject a task (review → rejected).
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
 ### GET `/api/reviews/`
-Lấy danh sách reviews.
+Get list of reviews.
 
 **Query params:**
 - `status` — `pending | approved | rejected | needs_revision`
@@ -1108,7 +1108,7 @@ Lấy danh sách reviews.
 ---
 
 ### POST `/api/reviews/`
-Tạo review cho annotation. Reviewer tự động là user hiện tại.
+Create a review for an annotation. The reviewer is automatically set to the current user.
 
 **Request body:**
 ```json
@@ -1124,14 +1124,14 @@ Tạo review cho annotation. Reviewer tự động là user hiện tại.
 ---
 
 ### POST `/api/reviews/{id}/approve/`
-Phê duyệt review.
+Approve a review.
 
 **Response `200`:** Updated Review object (`status: "approved"`)
 
 ---
 
 ### POST `/api/reviews/{id}/reject/`
-Từ chối review.
+Reject a review.
 
 **Request body:**
 ```json
@@ -1145,7 +1145,7 @@ Từ chối review.
 ---
 
 ### POST `/api/reviews/{id}/request_revision/`
-Yêu cầu sửa lại.
+Request revision.
 
 **Request body:**
 ```json
@@ -1161,7 +1161,7 @@ Yêu cầu sửa lại.
 ## 6. Training
 
 ### GET `/api/architectures/`
-Lấy danh sách model architectures.
+Get list of model architectures.
 
 **Response `200`:**
 ```json
@@ -1182,7 +1182,7 @@ Lấy danh sách model architectures.
 ---
 
 ### POST `/api/architectures/`
-Tạo architecture mới. **Permission required:** Admin only
+Create a new architecture. **Permission required:** Admin only
 
 **Request body:**
 ```json
@@ -1200,7 +1200,7 @@ Tạo architecture mới. **Permission required:** Admin only
 ---
 
 ### GET `/api/training-jobs/`
-Lấy danh sách training jobs.
+Get list of training jobs.
 
 **Response `200`:**
 ```json
@@ -1230,7 +1230,7 @@ Lấy danh sách training jobs.
 ---
 
 ### POST `/api/training-jobs/`
-Tạo training job mới.
+Create a new training job.
 
 **Request body:**
 ```json
@@ -1249,21 +1249,21 @@ Tạo training job mới.
 ---
 
 ### POST `/api/training-jobs/{id}/start/`
-Bắt đầu training job (enqueue Celery task). **Permission required:** `training.start_job`
+Start a training job (enqueue Celery task). **Permission required:** `training.start_job`
 
 **Response `200`:** Updated TrainingJob object (`status: "queued"`)
 
 ---
 
 ### POST `/api/training-jobs/{id}/stop/`
-Dừng training job. **Permission required:** `training.start_job`
+Stop a training job. **Permission required:** `training.start_job`
 
 **Response `200`:** Updated TrainingJob object (`status: "cancelled"`)
 
 ---
 
 ### GET `/api/training-jobs/{id}/experiments/`
-Lấy danh sách experiments của training job.
+Get list of experiments for a training job.
 
 **Response `200`:**
 ```json
@@ -1282,12 +1282,12 @@ Lấy danh sách experiments của training job.
 ---
 
 ### GET `/api/experiments/`
-Lấy tất cả experiments.
+Get all experiments.
 
 ---
 
 ### GET `/api/experiments/{id}/metrics/`
-Lấy metrics theo epoch của experiment.
+Get per-epoch metrics for an experiment.
 
 **Response `200`:**
 ```json
@@ -1314,7 +1314,7 @@ Lấy metrics theo epoch của experiment.
 ## 7. Deployments
 
 ### GET `/api/registry/`
-Lấy danh sách model registry.
+Get list of model registry entries.
 
 **Response `200`:**
 ```json
@@ -1325,7 +1325,7 @@ Lấy danh sách model registry.
     "name": "YOLOv8 v1.0",
     "version": 1,
     "format": "onnx | pytorch | tensorflow",
-    "model_file": "http://...",
+    "model_file": "http://... (presigned URL from visiox-artifacts MinIO bucket; path: training-jobs/{job_id}/weights/{filename})",
     "file_size": 52428800,
     "metrics": { "map50": 0.85 },
     "changelog": "Initial release",
@@ -1341,7 +1341,7 @@ Lấy danh sách model registry.
 ---
 
 ### POST `/api/registry/`
-Đăng ký model mới. **Content-Type:** `multipart/form-data`
+Register a new model. **Content-Type:** `multipart/form-data`
 
 **Request body (form-data):**
 | Field | Type | Required |
@@ -1358,20 +1358,20 @@ Lấy danh sách model registry.
 ---
 
 ### POST `/api/registry/{id}/rollback/`
-Rollback về version trước.
+Roll back to the previous version.
 
 **Response `200`:**
 ```json
 {
   "message": "Rolled back to version 1",
-  "active_version": { ...ModelRegistry object... }
+  "active_version": { "...ModelRegistry object..." : null }
 }
 ```
 
 ---
 
 ### GET `/api/endpoints/`
-Lấy danh sách inference endpoints.
+Get list of inference endpoints.
 
 **Response `200`:**
 ```json
@@ -1396,7 +1396,7 @@ Lấy danh sách inference endpoints.
 ---
 
 ### POST `/api/endpoints/`
-Tạo inference endpoint mới. Auth token tự động được tạo.
+Create a new inference endpoint. Auth token is generated automatically.
 
 **Request body:**
 ```json
@@ -1414,21 +1414,21 @@ Tạo inference endpoint mới. Auth token tự động được tạo.
 ---
 
 ### POST `/api/endpoints/{id}/start/`
-Kích hoạt endpoint. **Permission required:** `deployments.start_endpoint`
+Activate endpoint. **Permission required:** `deployments.start_endpoint`
 
 **Response `200`:** Updated endpoint (`status: "active"`)
 
 ---
 
 ### POST `/api/endpoints/{id}/stop/`
-Dừng endpoint. **Permission required:** `deployments.stop_endpoint`
+Stop endpoint. **Permission required:** `deployments.stop_endpoint`
 
 **Response `200`:** Updated endpoint (`status: "inactive"`)
 
 ---
 
 ### POST `/api/endpoints/{id}/log_prediction/`
-Ghi log một lần inference.
+Log a single inference event.
 
 **Request body:**
 ```json
@@ -1444,7 +1444,7 @@ Ghi log một lần inference.
 ---
 
 ### GET `/api/endpoints/{id}/logs/`
-Lấy 100 logs gần nhất.
+Get the 100 most recent logs.
 
 **Response `200`:**
 ```json
@@ -1465,7 +1465,7 @@ Lấy 100 logs gần nhất.
 ---
 
 ### GET `/api/endpoints/{id}/alerts/`
-Lấy danh sách drift alerts chưa được giải quyết.
+Get list of unresolved drift alerts.
 
 **Response `200`:**
 ```json
@@ -1488,7 +1488,7 @@ Lấy danh sách drift alerts chưa được giải quyết.
 ---
 
 ### POST `/api/endpoints/{id}/trigger_drift_check/`
-Kích hoạt drift check (Celery task).
+Trigger a drift check (Celery task).
 
 **Response `200`:**
 ```json
@@ -1501,22 +1501,22 @@ Kích hoạt drift check (Celery task).
 ---
 
 ### GET `/api/monitoring/`
-Lấy tất cả monitoring logs.
+Get all monitoring logs.
 
 ---
 
 ### GET `/api/drift-alerts/`
-Lấy tất cả drift alerts.
+Get all drift alerts.
 
 ---
 
 ### PATCH `/api/drift-alerts/{id}/`
-Cập nhật drift alert.
+Update a drift alert.
 
 ---
 
 ### POST `/api/drift-alerts/{id}/resolve/`
-Đánh dấu alert đã được giải quyết.
+Mark an alert as resolved.
 
 **Response `200`:** Updated DriftAlert object (`is_resolved: true`, `resolved_at` set)
 
@@ -1525,7 +1525,7 @@ Cập nhật drift alert.
 ## 8. Billing
 
 ### GET `/api/plans/`
-Lấy danh sách plans.
+Get list of plans.
 
 **Response `200`:**
 ```json
@@ -1548,7 +1548,7 @@ Lấy danh sách plans.
 ---
 
 ### POST `/api/subscriptions/subscribe/`
-Đăng ký plan cho team (tích hợp Stripe).
+Subscribe a team to a plan (Stripe integration).
 
 **Request body:**
 ```json
@@ -1578,17 +1578,17 @@ Lấy danh sách plans.
 ---
 
 ### GET `/api/subscriptions/my_subscription/`
-Lấy subscription hiện tại.
+Get the current subscription.
 
 **Query params:**
-- `team_id` — lọc theo team
+- `team_id` — filter by team
 
 **Response `200`:** Subscription object
 
 ---
 
 ### POST `/api/subscriptions/cancel/`
-Huỷ subscription.
+Cancel subscription.
 
 **Request body:**
 ```json
@@ -1602,7 +1602,7 @@ Huỷ subscription.
 ---
 
 ### GET `/api/usage/`
-Lấy danh sách usage records của team.
+Get usage records for the team.
 
 **Response `200`:**
 ```json
@@ -1620,7 +1620,7 @@ Lấy danh sách usage records của team.
 ---
 
 ### GET `/api/api-keys/`
-Lấy danh sách API keys.
+Get list of API keys.
 
 **Response `200`:**
 ```json
@@ -1641,7 +1641,7 @@ Lấy danh sách API keys.
 ---
 
 ### POST `/api/api-keys/`
-Tạo API key mới. **Full key chỉ hiển thị một lần khi tạo.**
+Create a new API key. **The full key is shown only once at creation.**
 
 **Request body:**
 ```json
@@ -1667,14 +1667,14 @@ Tạo API key mới. **Full key chỉ hiển thị một lần khi tạo.**
 ---
 
 ### POST `/api/api-keys/{id}/revoke/`
-Thu hồi API key.
+Revoke an API key.
 
 **Response `204`:** No content
 
 ---
 
 ### GET `/api/webhooks/`
-Lấy danh sách webhooks.
+Get list of webhooks.
 
 **Response `200`:**
 ```json
@@ -1694,7 +1694,7 @@ Lấy danh sách webhooks.
 ---
 
 ### POST `/api/webhooks/`
-Tạo webhook mới.
+Create a new webhook.
 
 **Request body:**
 ```json
@@ -1711,19 +1711,19 @@ Tạo webhook mới.
 ---
 
 ### PUT/PATCH `/api/webhooks/{id}/`
-Cập nhật webhook.
+Update webhook.
 
 ---
 
 ### DELETE `/api/webhooks/{id}/`
-Xoá webhook.
+Delete webhook.
 
 **Response `204`:** No content
 
 ---
 
 ### POST `/api/webhooks/{id}/test/`
-Gửi test event đến webhook.
+Send a test event to the webhook.
 
 **Response `200`:**
 ```json
@@ -1736,7 +1736,7 @@ Gửi test event đến webhook.
 ---
 
 ### POST `/api/webhooks/stripe/`
-Stripe webhook endpoint (xác thực bằng `Stripe-Signature` header).
+Stripe webhook endpoint (validated via `Stripe-Signature` header).
 
 **Auth required:** No
 
@@ -1745,10 +1745,10 @@ Stripe webhook endpoint (xác thực bằng `Stripe-Signature` header).
 ## 9. Dataverse
 
 ### GET `/api/dataverse/`
-Lấy danh sách public projects trong Dataverse.
+Get list of public projects in Dataverse.
 
 **Query params:**
-- `search` — tìm theo title, summary, tags
+- `search` — search by title, summary, or tags
 - `ordering` — `updated_at`, `created_at`, `fork_count`, `view_count`, `title`
 
 **Response `200`:**
@@ -1769,7 +1769,7 @@ Lấy danh sách public projects trong Dataverse.
     "dataset_count": 3,
     "media_count": 1500,
     "class_count": 10,
-    "thumbnail": "http://... hoặc null",
+    "thumbnail": "http://... (presigned MinIO URL or null)",
     "fork_count": 12,
     "view_count": 340,
     "created_at": "2024-01-01T00:00:00Z",
@@ -1781,14 +1781,14 @@ Lấy danh sách public projects trong Dataverse.
 ---
 
 ### GET `/api/dataverse/{id}/`
-Lấy chi tiết public project. Tự động tăng `view_count`.
+Get public project details. Automatically increments `view_count`.
 
 **Response `200`:** DataverseProject object
 
 ---
 
 ### POST `/api/dataverse/share-project/`
-Chia sẻ project lên Dataverse.
+Share a project to Dataverse.
 
 **Request body:**
 ```json
@@ -1807,7 +1807,7 @@ Chia sẻ project lên Dataverse.
 ---
 
 ### POST `/api/dataverse/{id}/fork/`
-Fork một public project vào team của mình. Sao chép toàn bộ classes, datasets, media và annotations.
+Fork a public project into your team. Copies all classes, datasets, media, and annotations.
 
 **Request body:**
 ```json
@@ -1831,15 +1831,15 @@ Fork một public project vào team của mình. Sao chép toàn bộ classes, d
 
 | Status | Meaning |
 |---|---|
-| `400` | Validation error — response body chứa chi tiết lỗi theo field |
-| `401` | Chưa xác thực hoặc token hết hạn |
-| `403` | Không có quyền truy cập |
-| `404` | Không tìm thấy resource |
-| `409` | Conflict (ví dụ: file đã tồn tại trong dataset) |
-| `422` | Unprocessable entity — dữ liệu không hợp lệ |
-| `500` | Server error — kiểm tra Django logs |
+| `400` | Validation error — response body contains per-field error details |
+| `401` | Unauthenticated or token expired |
+| `403` | Forbidden — insufficient permissions |
+| `404` | Resource not found |
+| `409` | Conflict (e.g. file already exists in the dataset) |
+| `422` | Unprocessable entity — invalid data |
+| `500` | Server error — check Django logs |
 
-**Ví dụ lỗi validation `400`:**
+**Validation error `400` example:**
 ```json
 {
   "email": ["This field is required."],
@@ -1847,14 +1847,14 @@ Fork một public project vào team của mình. Sao chép toàn bộ classes, d
 }
 ```
 
-**Ví dụ lỗi `401`:**
+**`401` error example:**
 ```json
 {
   "detail": "Authentication credentials were not provided."
 }
 ```
 
-**Ví dụ lỗi `404`:**
+**`404` error example:**
 ```json
 {
   "detail": "Not found."
@@ -1865,11 +1865,11 @@ Fork một public project vào team của mình. Sao chép toàn bộ classes, d
 
 ## Pagination
 
-Tất cả list endpoints đều hỗ trợ phân trang (`PageNumberPagination`, page size mặc định: 20).
+All list endpoints support pagination (`PageNumberPagination`, default page size: 20).
 
 **Query params:**
-- `?page=<n>` — số trang (bắt đầu từ 1)
-- `?page_size=<n>` — số items mỗi trang (max: thường 100)
+- `?page=<n>` — page number (starts at 1)
+- `?page_size=<n>` — items per page (max: typically 100)
 
 **Response structure:**
 ```json
@@ -1885,7 +1885,7 @@ Tất cả list endpoints đều hỗ trợ phân trang (`PageNumberPagination`,
 
 ## Webhook Events
 
-Các events được gửi qua outbound webhooks (`POST /api/webhooks/`) với header `X-Visiox-Signature: <HMAC-SHA256>`.
+Events are sent via outbound webhooks (`POST /api/webhooks/`) with header `X-Visiox-Signature: <HMAC-SHA256>`.
 
 | Event | Trigger |
 |---|---|

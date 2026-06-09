@@ -26,7 +26,7 @@
 |---|---|---|---|
 | Project setup & cloud infra | Infrastructure | Stage 1–2 | Provision cloud (AWS/GCP), set up CI/CD pipelines, Kubernetes, and staging environments. |
 | Authentication & team management | Infrastructure | Stage 2–4 | SSO, RBAC roles (admin, annotator, reviewer, viewer), team workspaces, and API keys. |
-| Dataset upload & storage | Data & Labeling | Stage 3–5 | Bulk image/video upload, S3 object storage integration, dataset versioning. |
+| Dataset upload & storage | Data & Labeling | Stage 3–5 | Bulk image/video upload, MinIO (self-hosted S3-compatible) object storage, dataset versioning. ✅ Implemented — 3 buckets: `visiox-media`, `visiox-artifacts`, `visiox-tmp`. |
 | Basic annotation canvas (images) | Data & Labeling | Stage 4–8 | Bounding box, polygon, and classification tools on a web canvas. Keyboard shortcuts. |
 | Project & dataset dashboard | Product | Stage 5–8 | Create/manage projects, dataset previews, annotation progress tracking. |
 | REST API skeleton | Infrastructure | Stage 6–10 | Authenticated CRUD API for datasets, assets, and annotations. OpenAPI spec. |
@@ -167,7 +167,7 @@
 | Annotation canvas | Fabric.js / Konva.js / custom WebGL |
 | ML frameworks | PyTorch, TensorFlow, ONNX, TensorRT |
 | Training jobs | Ray, Celery, Slurm |
-| Storage | S3 (assets), PostgreSQL (metadata), Redis (queues) |
+| Storage | MinIO self-hosted S3-compatible (assets), PostgreSQL (metadata), Redis (queues) |
 | Monitoring | Grafana, Prometheus, OpenTelemetry |
 | Billing | Stripe |
 | Auth | Auth0 / Keycloak |

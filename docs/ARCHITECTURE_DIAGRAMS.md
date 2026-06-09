@@ -42,7 +42,7 @@ flowchart LR
     subgraph DataStores["Persistence"]
         PG[("PostgreSQL\napplication state")]
         Redis[("Redis\nCelery broker + results")]
-        Media[("Local media\nor S3")]
+        Media[("MinIO (visiox-media)\nor local disk")]
     end
 
     subgraph External["External Services"]
@@ -152,7 +152,7 @@ sequenceDiagram
     DB-->>API: APIKey + linked user
     API-->>Client: Authorized response
 
-    Note over Client,DB: Frame images (AllowAny — không cần auth)
+    Note over Client,DB: Frame images (AllowAny — no auth required)
     Client->>API: GET /api/datasets/{id}/frames/{n}/
     API-->>Client: Image bytes (no auth required)
 ```
@@ -258,7 +258,7 @@ flowchart TD
 
     D1[("PostgreSQL\napp state")]
     D2[("Redis\nCelery queues")]
-    D3[("Media\nlocal or S3")]
+    D3[("MinIO\nor local disk")]
 
     API["VisioX Django API"]
     CVAT["CVAT"]
@@ -320,8 +320,8 @@ flowchart LR
 
     PG[("PostgreSQL")]
     Redis[("Redis")]
-    MediaFS[("Media files")]
-    S3[("Optional S3")]
+    MediaFS[("Local media files\n(USE_MINIO=False)")]
+    MinIO[("MinIO S3-compatible\nvisiox-media · visiox-artifacts · visiox-tmp")]
     CVATSdk["CVAT SDK / REST"]
     StripeAPI["Stripe API"]
 
@@ -330,7 +330,7 @@ flowchart LR
     Billing --> APIKeyAuth
 
     Core & Teams & Projects & Datasets & Annot & Training & Deploy & Billing & Dataverse --> PG
-    Datasets --> MediaFS & S3 & CVATSdk
+    Datasets --> MediaFS & MinIO & CVATSdk
     Annot --> CVATSdk
     Billing --> StripeAPI
 
@@ -499,6 +499,58 @@ sequenceDiagram
 
 ---
 
+## 12. MinIO Storage Architecture
+
+```mermaid
+flowchart LR
+    subgraph Django["Django Backend"]
+        Upload["Media upload\n(datasets/models.py\nmedia_upload_path)"]
+        ArtifactUpload["Artifact upload\n(deployments/models.py\nartifact_upload_path)"]
+        Storage["django-storages\nS3Boto3Storage"]
+        ArtifactStorage["core/storage.py\nget_artifacts_storage()"]
+    end
+
+    subgraph MinIO["MinIO  (10.29.30.20:9000)"]
+        M1[("visiox-media\npermanent\ndataset images")]
+        M2[("visiox-artifacts\npermanent\ntrained model weights")]
+        M3[("visiox-tmp\n7-day lifecycle\nephemeral uploads")]
+    end
+
+    Upload -->|"USE_MINIO=True"| Storage --> M1
+    ArtifactUpload --> ArtifactStorage --> M2
+
+    subgraph Path["Object path  (visiox-media)"]
+        P["orgs/{id}_{slug}/\n  projects/{id}_{slug}/\n    datasets/{id}_{slug}/\n      v{version}/\n        raw|augmented/\n          {filename}"]
+    end
+
+    subgraph Path2["Object path  (visiox-artifacts)"]
+        P2["training-jobs/{job_id}/\n  weights/{filename}"]
+    end
+
+    M1 -.->|example| P
+    M2 -.->|example| P2
+```
+
+**Environment variables (`.env`):**
+
+| Variable | Example | Purpose |
+| --- | --- | --- |
+| `USE_MINIO` | `True` | Enable MinIO storage backend |
+| `MINIO_ENDPOINT` | `http://10.29.30.20:9000` | MinIO server URL |
+| `MINIO_ACCESS_KEY` | `admin` | Access key (MinIO root user or service account) |
+| `MINIO_SECRET_KEY` | `StrongPassword123` | Secret key |
+| `MINIO_BUCKET` | `visiox-media` | Default bucket for media uploads |
+
+**Management commands for data migration:**
+
+| Command | Purpose |
+| --- | --- |
+| `migrate_to_minio` | Local disk → MinIO `visiox-data/teams/` |
+| `migrate_to_new_structure` | `visiox-data/teams/{id}/` → `visiox-media/orgs/{id}/v{version}/` |
+| `migrate_to_slug_paths` | `orgs/{id}/` → `orgs/{id}_{slug}/` (human-readable rename) |
+
+---
+
 ## Agent Constraints
 
 - Do not add boxes, arrows, or endpoints unless they exist in the codebase or are explicitly marked as future work.
@@ -509,7 +561,8 @@ sequenceDiagram
 
 ## Notes
 
-- PostgreSQL stores all transactional state. Redis is the Celery broker and result backend. Media is local by default and can be moved to S3 via `USE_S3=true`.
+- PostgreSQL stores all transactional state. Redis is the Celery broker and result backend. Media is local by default; set `USE_MINIO=True` in `.env` to route all uploads to MinIO (`MINIO_ENDPOINT`).
+- Three MinIO buckets: `visiox-media` (dataset images — permanent), `visiox-artifacts` (trained model weights — permanent), `visiox-tmp` (ephemeral uploads — 7-day lifecycle policy). Storage paths use the pattern `orgs/{id}_{slug}/projects/{id}_{slug}/datasets/{id}_{slug}/v{version}/{category}/{filename}`.
 - The Docker Compose stack runs `db`, `redis`, `api`, `worker`, and `beat`. CVAT runs separately and is reached via `CVAT_INTERNAL_HOST`.
 - CVAT integration is concentrated in `datasets/services/cvat.py`. All provisioning, frame proxying, browser payload assembly, one-time data upload, deleted-frame sync, orphan repair, and webhook registration live there.
 - `VISIOX_STANDALONE=true` disables all CVAT calls and falls back to `datasets/standalone.py` for browser data and frame delivery.
