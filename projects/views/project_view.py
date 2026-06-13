@@ -6,7 +6,6 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.db.models import Q
 
-from core.permissions import HasPerm
 from projects.models import Project
 from projects.serializers import ProjectSerializer, ProjectCreateSerializer
 from projects.permissions import IsProjectOwnerOrTeamAdmin, IsProjectOwnerOrTeamOwner
@@ -23,17 +22,20 @@ class ProjectViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
 
     def get_permissions(self):
+        # Ownership is the gate: the project owner can always edit/delete their
+        # own project (object-level check), with team owner/admin as a fallback
+        # when the project is shared with a team.
         if self.action in ('update', 'partial_update'):
-            return [HasPerm('projects.change_project'), IsProjectOwnerOrTeamAdmin()]
+            return [IsProjectOwnerOrTeamAdmin()]
         if self.action == 'destroy':
-            return [HasPerm('projects.delete_project'), IsProjectOwnerOrTeamOwner()]
+            return [IsProjectOwnerOrTeamOwner()]
         return [IsAuthenticated()]
-    
+
     def get_queryset(self):
         user = self.request.user
-        
+
         return Project.objects.filter(
-            Q(team__owner=user) | Q(team__members__user=user)
+            Q(owner=user) | Q(team__owner=user) | Q(team__members__user=user)
         ).distinct().select_related('team').order_by('-created_at')
     
     def get_serializer_class(self):

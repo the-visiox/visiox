@@ -12,19 +12,23 @@ class IsProjectOwnerOrTeamAdmin(permissions.BasePermission):
             return True
         
         user = request.user
-        
+
         # Check if user is project owner
         if obj.owner == user:
             return True
-        
+
+        # Team checks only apply when the project is shared with a team
+        if obj.team is None:
+            return False
+
         # Check if user is team owner
         if obj.team.owner == user:
             return True
-        
+
         # Check if user is team admin
         if obj.team.members.filter(user=user, role__in=['owner', 'admin']).exists():
             return True
-        
+
         return False
 
 
@@ -39,6 +43,8 @@ class IsProjectOwnerOrTeamOwner(permissions.BasePermission):
             return True
         
         user = request.user
-        
+
         # Only project owner or team owner can delete
-        return obj.owner == user or obj.team.owner == user
+        if obj.owner == user:
+            return True
+        return obj.team is not None and obj.team.owner == user

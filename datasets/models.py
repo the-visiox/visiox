@@ -10,21 +10,24 @@ def _slug(name: str) -> str:
 
 def media_upload_path(instance, filename):
     """
-    orgs/{team_id}_{team_slug}/projects/{project_id}_{project_slug}/
+    users/{owner_id}_{owner_slug}/projects/{project_id}_{project_slug}/
         datasets/{dataset_id}_{dataset_slug}/v{version}/{category}/{filename}
+
+    Storage is keyed by the project owner (the user who created it), not the team.
+    Team membership only grants access — it never changes where files live.
 
     Set instance._upload_category = 'augmented' before saving augmented images.
     """
     category = getattr(instance, '_upload_category', 'raw')
-    team = instance.dataset.project.team
     project = instance.dataset.project
     dataset = instance.dataset
+    owner = project.owner
 
-    team_folder    = f"{team.id}_{_slug(team.name)}"
+    owner_folder   = f"{owner.id}_{_slug(owner.username)}" if owner else "0_unknown"
     project_folder = f"{project.id}_{_slug(project.name)}"
     dataset_folder = f"{dataset.id}_{_slug(dataset.name)}"
 
-    return f"orgs/{team_folder}/projects/{project_folder}/datasets/{dataset_folder}/v{dataset.version}/{category}/{filename}"
+    return f"users/{owner_folder}/projects/{project_folder}/datasets/{dataset_folder}/v{dataset.version}/{category}/{filename}"
 
 
 class Dataset(models.Model):
@@ -36,7 +39,6 @@ class Dataset(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
     version = models.PositiveIntegerField(default=1)
-    cvat_task_id = models.IntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -64,7 +66,7 @@ class Media(models.Model):
         related_name='media_files'
     )
     type = models.CharField(max_length=50, choices=MEDIA_TYPE_CHOICES)
-    file = models.FileField(upload_to=media_upload_path)
+    file = models.FileField(upload_to=media_upload_path, max_length=500)
     original_filename = models.CharField(max_length=255, blank=True)
     width = models.IntegerField(null=True, blank=True)
     height = models.IntegerField(null=True, blank=True)
