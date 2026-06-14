@@ -139,6 +139,18 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '60/min',
+        'user': '300/min',
+        'login': '5/min',
+        'register': '3/min',
+        'token_refresh': '10/min',
+    },
+    'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler',
 }
 
 SIMPLE_JWT = {

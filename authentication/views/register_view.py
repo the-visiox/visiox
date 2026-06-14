@@ -4,11 +4,13 @@ from rest_framework.permissions import AllowAny
 
 from authentication.serializers import RegisterSerializer
 from authentication.services import AuthenticationService
+from authentication.throttles import RegisterRateThrottle
 
 
 class RegisterView(views.APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [RegisterRateThrottle]
     serializer_class = RegisterSerializer
 
     @extend_schema(request=RegisterSerializer, responses={201: dict})
