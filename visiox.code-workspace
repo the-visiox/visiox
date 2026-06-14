@@ -6,5 +6,8 @@
         {
             "path": "."
         }
-    ]
+    ],
+    "settings": {
+        "python.defaultInterpreterPath": "C:\\Users\\Admin\\miniconda3\\python.exe"
+    }
 }

@@ -1,54 +1,26 @@
 version: '3.9'
 
+# App services — each developer runs this locally
+#
+#   cp env.example .env   # fill in shared server IPs
+#   docker compose up
+#
+# Requires the shared infrastructure (docker-compose.infra.yml) to be running
+# on the shared server before starting these services.
+
 services:
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${DATABASE_NAME:-visiox}
-      POSTGRES_USER: ${DATABASE_USER:-postgres}
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-postgres}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${DB_HOST_PORT:-5432}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-postgres}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   api:
     build: .
     restart: unless-stopped
-    command: python manage.py runserver 0.0.0.0:8000
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
     volumes:
       - .:/app
-      - media_files:/app/media
     ports:
       - "8000:8000"
     env_file:
       - .env
-    environment:
-      DATABASE_HOST: db
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
 
   worker:
     build: .
@@ -56,18 +28,8 @@ services:
     command: celery -A visiox worker -l info
     volumes:
       - .:/app
-      - media_files:/app/media
     env_file:
       - .env
-    environment:
-      DATABASE_HOST: db
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
 
   beat:
     build: .
@@ -77,16 +39,3 @@ services:
       - .:/app
     env_file:
       - .env
-    environment:
-      DATABASE_HOST: db
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-volumes:
-  postgres_data:
-  media_files:

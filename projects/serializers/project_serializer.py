@@ -23,7 +23,6 @@ class ProjectSerializer(serializers.ModelSerializer):
             'task_type',
             'description',
             'thumbnail',
-            'cvat_project_id',
             'created_at',
             'updated_at'
         ]
@@ -46,8 +45,12 @@ class ProjectSerializer(serializers.ModelSerializer):
 
 
 class ProjectCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating a new Project"""
-    
+    """Serializer for creating a new Project.
+
+    Projects are owned by the user who creates them; a team is optional and only
+    used to share a project with other members.
+    """
+
     class Meta:
         model = Project
         fields = [
@@ -56,17 +59,19 @@ class ProjectCreateSerializer(serializers.ModelSerializer):
             'task_type',
             'description'
         ]
-    
+        extra_kwargs = {
+            'team': {'required': False, 'allow_null': True},
+        }
+
     def validate_team(self, value):
-        """Validate that the user has access to the team"""
+        """If a team is given, the user must own or belong to it."""
+        if value is None:
+            return value
         user = self.context['request'].user
-        
-        # Check if user is owner or member of the team
         if not (value.owner == user or value.members.filter(user=user).exists()):
             raise serializers.ValidationError(
                 "You don't have permission to create projects in this team."
             )
-        
         return value
     
     def validate_name(self, value):

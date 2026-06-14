@@ -154,6 +154,17 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'Computer Vision Platform API — annotation, training, deployment, billing.',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    'APPEND_COMPONENTS': {
+        'securitySchemes': {
+            'BearerAuth': {
+                'type': 'http',
+                'scheme': 'bearer',
+                'bearerFormat': 'JWT',
+                'description': 'Paste the access_token from POST /api/v1/auth/login/',
+            },
+        }
+    },
+    'SECURITY': [{'BearerAuth': []}],
 }
 
 # Celery
@@ -164,17 +175,28 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
-# Storage — local by default, switch to S3 via env
-USE_S3 = os.getenv('USE_S3', 'False') == 'True'
+# Storage — local by default, switch to MinIO via env
+USE_MINIO = os.getenv('USE_MINIO', 'False') == 'True'
 
-if USE_S3:
-    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-    AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
-    AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
-    AWS_STORAGE_BUCKET_NAME = os.getenv('AWS_STORAGE_BUCKET_NAME')
-    AWS_S3_REGION_NAME = os.getenv('AWS_S3_REGION_NAME', 'us-east-1')
+if USE_MINIO:
+    AWS_ACCESS_KEY_ID = os.getenv('MINIO_ACCESS_KEY')
+    AWS_SECRET_ACCESS_KEY = os.getenv('MINIO_SECRET_KEY')
+    AWS_STORAGE_BUCKET_NAME = os.getenv('MINIO_BUCKET', 'visiox-media')
+    AWS_S3_REGION_NAME = 'us-east-1'
     AWS_S3_FILE_OVERWRITE = False
     AWS_DEFAULT_ACL = None
+    AWS_S3_ENDPOINT_URL = os.getenv('MINIO_ENDPOINT', 'http://10.29.30.20:9000')
+    AWS_S3_ADDRESSING_STYLE = 'path'
+    AWS_S3_SIGNATURE_VERSION = 's3v4'
+    AWS_QUERYSTRING_AUTH = True  # presigned URL cho private bucket
+    STORAGES = {
+        'default': {
+            'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
+        },
+        'staticfiles': {
+            'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+        },
+    }
 
 # Stripe
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
@@ -205,21 +227,11 @@ CSRF_TRUSTED_ORIGINS = [
     if o.strip()
 ]
 
-# CVAT Integration
-CVAT_INTERNAL_HOST = os.getenv('CVAT_HOST', 'http://localhost:8080')
-CVAT_PUBLIC_URL = os.getenv('CVAT_PUBLIC_URL', 'http://localhost:8080')
-CVAT_USERNAME = os.getenv('CVAT_USERNAME', 'admin')
-CVAT_PASSWORD = os.getenv('CVAT_PASSWORD', 'master123')
-CVAT_WEBHOOK_URL = os.getenv('CVAT_WEBHOOK_URL', 'http://host.docker.internal:8000/api/datasets/cvat-webhook/')
-
 # OAuth login. Frontend redirects to /auth/callback and posts provider code here.
 GOOGLE_OAUTH_CLIENT_ID = os.getenv('GOOGLE_OAUTH_CLIENT_ID', '')
 GOOGLE_OAUTH_CLIENT_SECRET = os.getenv('GOOGLE_OAUTH_CLIENT_SECRET', '')
 GITHUB_OAUTH_CLIENT_ID = os.getenv('GITHUB_OAUTH_CLIENT_ID', '')
 GITHUB_OAUTH_CLIENT_SECRET = os.getenv('GITHUB_OAUTH_CLIENT_SECRET', '')
-
-# When true: no CVAT provisioning, browser + frame images use VisioX Media only.
-VISIOX_STANDALONE = os.getenv('VISIOX_STANDALONE', 'false').lower() in ('1', 'true', 'yes')
 
 # Django Silk — request/query profiler (only active when DEBUG=True).
 # NOTE: keep the Python profiler OFF by default — it hooks sys.setprofile() and

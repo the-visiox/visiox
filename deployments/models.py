@@ -4,6 +4,12 @@ from django.conf import settings
 from django.db import models
 
 
+def artifact_upload_path(instance, filename):
+    """training-jobs/{job_id}/weights/{filename}  (stored in visiox-artifacts bucket)"""
+    job_id = instance.training_job_id or 'manual'
+    return f"training-jobs/{job_id}/weights/{filename}"
+
+
 class ModelRegistry(models.Model):
     FORMAT_CHOICES = [
         ('pytorch', 'PyTorch'),
@@ -23,7 +29,12 @@ class ModelRegistry(models.Model):
     name = models.CharField(max_length=255)
     version = models.CharField(max_length=50, default='1.0.0')
     format = models.CharField(max_length=50, choices=FORMAT_CHOICES, default='pytorch')
-    model_file = models.FileField(upload_to='models/%Y/%m/', null=True, blank=True)
+    model_file = models.FileField(
+        upload_to=artifact_upload_path,
+        storage='core.storage.get_artifacts_storage',
+        null=True,
+        blank=True,
+    )
     file_size = models.PositiveBigIntegerField(null=True, blank=True)
     metrics = models.JSONField(default=dict, blank=True)
     changelog = models.TextField(blank=True)

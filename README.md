@@ -96,6 +96,8 @@ Test nhanh:
 - Swagger: `http://localhost:8000/api/docs/`
 - Health check thủ công: mở `http://localhost:8000/api/schema/`
 
+> Tất cả API endpoints hiện dùng prefix `/api/v1/` (ví dụ `/api/v1/auth/login/`, `/api/v1/datasets/`).
+
 ---
 
 ### Terminal C — Frontend (Next.js)
@@ -172,16 +174,51 @@ Or bring up the full stack (`api`, `worker`, `beat`) per `docker-compose.yml`.
 
 ## API surface (selected)
 
-| Area | Base path |
-|------|-----------|
-| Auth (JWT) | `/api/auth/` — `login`, `register`, `token/refresh`, `logout` |
-| Teams / projects / datasets | `/api/teams/`, `/api/projects/`, `/api/datasets/` |
-| Classes (labels) | `/api/classes/?project=<id>` |
-| Annotations (CRUD, bulk) | `/api/annotations/` |
-| **Jobs** (alias for labeling tasks) | `/api/jobs/` — same viewset as `/api/tasks/` |
-| **Job annotations** | `GET` / `PATCH /api/jobs/{id}/annotations/` (PATCH replaces all annotations for that job’s media) |
-| **Job issues (QA comments)** | `GET` / `POST /api/jobs/{id}/issues/` — POST body: `{"body": "..."}` |
-| Training / deploy / billing | `/api/architectures/`, `/api/training-jobs/`, `/api/registry/`, `/api/endpoints/`, billing routes |
+Tất cả endpoints có prefix `/api/v1/`. Thiết kế theo chuẩn REST:
+
+| Area | Method | Endpoint | Mô tả |
+|------|--------|----------|-------|
+| **Auth** | POST | `/api/v1/auth/login/` | Đăng nhập, trả về JWT |
+| | POST | `/api/v1/auth/register/` | Đăng ký tài khoản |
+| | POST | `/api/v1/auth/token/refresh/` | Refresh access token |
+| | POST | `/api/v1/auth/logout/` | Đăng xuất |
+| **Teams** | GET/POST | `/api/v1/teams/` | Danh sách / tạo team |
+| | GET/POST | `/api/v1/teams/{id}/invitations/` | Danh sách / gửi email invite |
+| | DELETE | `/api/v1/teams/{id}/invitations/{invite_id}/` | Huỷ invitation |
+| | POST | `/api/v1/invitations/{token}/accept/` | Chấp nhận lời mời |
+| | GET | `/api/v1/teams/{id}/members/` | Danh sách thành viên |
+| | POST | `/api/v1/teams/{id}/invite/` | Thêm thành viên trực tiếp |
+| | PATCH/DELETE | `/api/v1/teams/{id}/members/{member_id}/` | Đổi role / xoá thành viên |
+| **Projects** | GET/POST | `/api/v1/projects/` | Danh sách / tạo project |
+| | GET/PATCH/DELETE | `/api/v1/projects/{id}/` | Chi tiết / cập nhật / xoá |
+| **Datasets** | GET/POST | `/api/v1/datasets/` | Danh sách / tạo dataset |
+| | GET/DELETE | `/api/v1/datasets/{id}/media/` | Danh sách media / xoá nhiều (`{"media_ids":[...]}`) |
+| | POST | `/api/v1/datasets/{id}/upload/` | Upload file |
+| | GET | `/api/v1/datasets/{id}/stats/` | Thống kê dataset |
+| | GET | `/api/v1/datasets/{id}/browser/` | Frame browser với annotations |
+| | POST | `/api/v1/datasets/{id}/versions/` | Tạo version mới |
+| | POST | `/api/v1/datasets/{id}/cvat-sync/` | Sync với CVAT |
+| | GET | `/api/v1/datasets/{id}/annotate-url/` | Lấy URL annotation CVAT |
+| | POST | `/api/v1/datasets/{id}/augmentations/preview/` | Xem trước augmentation |
+| | POST | `/api/v1/datasets/{id}/augmentations/` | Áp dụng augmentation |
+| | GET | `/api/v1/datasets/{id}/frames/{n}/` | Ảnh frame theo index |
+| | GET | `/api/v1/datasets/{id}/export/?format={coco,yolo,voc}` | Export annotations |
+| **Labels** | GET/POST | `/api/v1/classes/?project={id}` | Classes của project |
+| | PATCH/DELETE | `/api/v1/classes/{id}/` | Cập nhật / xoá class |
+| **Annotations** | GET/PUT | `/api/v1/datasets/{id}/frames/{n}/annotations/` | Lấy / lưu annotations |
+| | GET/PUT | `/api/v1/media/{id}/annotations/` | Annotations theo media |
+| **Training** | GET/POST | `/api/v1/training-jobs/` | Danh sách / tạo job |
+| | PATCH | `/api/v1/training-jobs/{id}/` với `{"status":"queued"}` | Bắt đầu training |
+| | PATCH | `/api/v1/training-jobs/{id}/` với `{"status":"cancelled"}` | Dừng training |
+| | GET | `/api/v1/training-jobs/{id}/experiments/` | Experiments của job |
+| | GET | `/api/v1/experiments/{id}/metrics/` | Metrics của experiment |
+| **Deployments** | GET/POST | `/api/v1/endpoints/` | Danh sách / tạo endpoint |
+| | PATCH | `/api/v1/endpoints/{id}/` với `{"status":"active"}` | Khởi động endpoint |
+| | PATCH | `/api/v1/endpoints/{id}/` với `{"status":"inactive"}` | Tắt endpoint |
+| | GET/POST | `/api/v1/registry/` | Model registry |
+| **Dataverse** | GET | `/api/v1/dataverse/` | Danh sách project công khai |
+| | POST | `/api/v1/dataverse/` | Chia sẻ project lên Dataverse |
+| | POST | `/api/v1/dataverse/{id}/fork/` | Fork project |
 
 ## Documentation URLs
 

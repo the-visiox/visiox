@@ -23,6 +23,7 @@ from projects.models import Project
 class DataverseProjectViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
+    mixins.CreateModelMixin,
     viewsets.GenericViewSet,
 ):
     serializer_class = DataverseProjectSerializer
@@ -54,8 +55,7 @@ class DataverseProjectViewSet(
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['post'], url_path='share-project')
-    def share_project(self, request):
+    def create(self, request, *args, **kwargs):
         serializer = DataverseShareSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         project = serializer.validated_data['project']

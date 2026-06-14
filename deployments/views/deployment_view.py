@@ -53,30 +53,27 @@ class InferenceEndpointViewSet(viewsets.ModelViewSet):
             registry_entry__training_job__project__team__members__user=self.request.user
         ).distinct().select_related('registry_entry', 'created_by')
 
-    def get_permissions(self):
-        if self.action == 'start':
-            return [HasPerm('deployments.start_endpoint')]
-        if self.action == 'stop':
-            return [HasPerm('deployments.stop_endpoint')]
-        return super().get_permissions()
-
-    @extend_schema(responses={200: InferenceEndpointSerializer})
-    @action(detail=True, methods=['post'])
-    def start(self, request, pk=None):
+    def partial_update(self, request, *args, **kwargs):
         endpoint = self.get_object()
-        if endpoint.status == 'active':
-            return Response({'error': 'Endpoint is already active.'}, status=status.HTTP_400_BAD_REQUEST)
-        endpoint.status = 'active'
-        endpoint.save(update_fields=['status'])
-        return Response(InferenceEndpointSerializer(endpoint).data)
+        new_status = request.data.get('status')
 
-    @extend_schema(responses={200: InferenceEndpointSerializer})
-    @action(detail=True, methods=['post'])
-    def stop(self, request, pk=None):
-        endpoint = self.get_object()
-        endpoint.status = 'inactive'
-        endpoint.save(update_fields=['status'])
-        return Response(InferenceEndpointSerializer(endpoint).data)
+        if new_status == 'active':
+            if not request.user.has_perm('deployments.start_endpoint'):
+                return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+            if endpoint.status == 'active':
+                return Response({'error': 'Endpoint is already active.'}, status=status.HTTP_400_BAD_REQUEST)
+            endpoint.status = 'active'
+            endpoint.save(update_fields=['status'])
+            return Response(InferenceEndpointSerializer(endpoint).data)
+
+        if new_status == 'inactive':
+            if not request.user.has_perm('deployments.stop_endpoint'):
+                return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+            endpoint.status = 'inactive'
+            endpoint.save(update_fields=['status'])
+            return Response(InferenceEndpointSerializer(endpoint).data)
+
+        return super().partial_update(request, *args, **kwargs)
 
     @extend_schema(responses={200: dict})
     @action(detail=True, methods=['post'])
