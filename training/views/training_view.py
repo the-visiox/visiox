@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 
 from core.permissions import HasPerm
+from core.access import project_access_q
 from training.models import ModelArchitecture, TrainingJob, Experiment, RunMetric
 from training.serializers import (
     ModelArchitectureSerializer,
@@ -32,7 +33,7 @@ class TrainingJobViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         return TrainingJob.objects.filter(
-            project__team__members__user=user
+            project_access_q(user, 'project__')
         ).distinct().select_related('architecture', 'created_by', 'project', 'dataset')
 
     def partial_update(self, request, *args, **kwargs):
@@ -81,7 +82,7 @@ class ExperimentViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         user = self.request.user
         return Experiment.objects.filter(
-            job__project__team__members__user=user
+            project_access_q(user, 'job__project__')
         ).distinct().select_related('job')
 
     @extend_schema(responses={200: RunMetricSerializer(many=True)})

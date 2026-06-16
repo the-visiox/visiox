@@ -16,6 +16,19 @@ def ordered_image_media(dataset: Dataset):
     return dataset.media_files.filter(type='image').order_by('uploaded_at', 'id')
 
 
+def is_augmented(media: Media) -> bool:
+    """True if this media was produced by the augmentation pipeline."""
+    if (media.metadata or {}).get('category') == 'augmented':
+        return True
+    name = media.file.name if media.file else ''
+    return '/augmented/' in (name or '')
+
+
+def raw_image_media(dataset: Dataset):
+    """Original (non-augmented) images only."""
+    return [m for m in ordered_image_media(dataset) if not is_augmented(m)]
+
+
 def _annotation_to_dict(ann) -> dict:
     """Convert an Annotation instance to the browser frame annotation format."""
     data = ann.data or {}
@@ -73,6 +86,7 @@ def browser_payload(dataset: Dataset) -> dict:
             'width': m.width or 0,
             'height': m.height or 0,
             'annotations': frame_annotations,
+            'augmented': is_augmented(m),
         })
 
     return {

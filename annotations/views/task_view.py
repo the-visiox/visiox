@@ -13,6 +13,7 @@ from annotations.serializers import (
     JobIssueSerializer,
     LabelingTaskSerializer,
 )
+from core.access import project_access_q
 
 
 class LabelingTaskViewSet(viewsets.ModelViewSet):
@@ -22,7 +23,7 @@ class LabelingTaskViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = LabelingTask.objects.filter(
-            media__dataset__project__team__members__user=user
+            project_access_q(user, 'media__dataset__project__')
         ).distinct().select_related('media', 'assigned_to')
 
         task_status = self.request.query_params.get('status')

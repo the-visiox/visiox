@@ -4,12 +4,30 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
+from django.db import transaction
 from django.db.models import Q
 
 from projects.models import Project
 from projects.serializers import ProjectSerializer, ProjectCreateSerializer
 from projects.permissions import IsProjectOwnerOrTeamAdmin, IsProjectOwnerOrTeamOwner
 from projects.filters import ProjectFilter
+from teams.models import Team, TeamMember
+
+
+def ensure_project_team(project):
+    """Give a project its backing collaboration group (Google-Docs style).
+
+    Every project has an implicit team: the owner is its team owner, and invited
+    collaborators become team members. Creating it grants the owner the team
+    permissions via the TeamMember post_save signal.
+    """
+    if project.team_id:
+        return project.team
+    team = Team.objects.create(name=project.name, owner=project.owner)
+    TeamMember.objects.get_or_create(team=team, user=project.owner, defaults={'role': 'owner'})
+    project.team = team
+    project.save(update_fields=['team'])
+    return team
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
@@ -44,5 +62,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         return ProjectSerializer
     
     def perform_create(self, serializer):
-        """Set owner when creating project"""
-        serializer.save(owner=self.request.user)
+        """Set owner and give the project its backing collaboration team."""
+        with transaction.atomic():
+            project = serializer.save(owner=self.request.user)
+            ensure_project_team(project)

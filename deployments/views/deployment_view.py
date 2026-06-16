@@ -6,6 +6,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
 from core.permissions import HasPerm
+from core.access import project_access_q
 from deployments.models import ModelRegistry, InferenceEndpoint, MonitoringLog, DriftAlert
 from deployments.serializers import (
     ModelRegistrySerializer,
@@ -23,7 +24,7 @@ class ModelRegistryViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return ModelRegistry.objects.filter(
-            training_job__project__team__members__user=self.request.user
+            project_access_q(self.request.user, 'training_job__project__')
         ).distinct().select_related('created_by', 'training_job')
 
     @extend_schema(responses={200: ModelRegistrySerializer})
@@ -50,7 +51,7 @@ class InferenceEndpointViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return InferenceEndpoint.objects.filter(
-            registry_entry__training_job__project__team__members__user=self.request.user
+            project_access_q(self.request.user, 'registry_entry__training_job__project__')
         ).distinct().select_related('registry_entry', 'created_by')
 
     def partial_update(self, request, *args, **kwargs):
@@ -121,7 +122,7 @@ class MonitoringLogViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         return MonitoringLog.objects.filter(
-            endpoint__registry_entry__training_job__project__team__members__user=self.request.user
+            project_access_q(self.request.user, 'endpoint__registry_entry__training_job__project__')
         ).distinct()
 
 
@@ -132,7 +133,7 @@ class DriftAlertViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return DriftAlert.objects.filter(
-            endpoint__registry_entry__training_job__project__team__members__user=self.request.user
+            project_access_q(self.request.user, 'endpoint__registry_entry__training_job__project__')
         ).distinct()
 
     @extend_schema(responses={200: DriftAlertSerializer})

@@ -8,6 +8,7 @@ from rest_framework import status
 
 from datasets.models import Dataset
 from annotations.services.export import export_coco, export_yolo, export_voc
+from core.access import project_access_q
 
 
 class DatasetExportView(APIView):
@@ -21,8 +22,8 @@ class DatasetExportView(APIView):
     def get(self, request, dataset_id):
         try:
             dataset = Dataset.objects.select_related('project').get(
+                project_access_q(request.user, 'project__'),
                 pk=dataset_id,
-                project__team__members__user=request.user,
             )
         except Dataset.DoesNotExist:
             return Response({'error': 'Dataset not found.'}, status=status.HTTP_404_NOT_FOUND)

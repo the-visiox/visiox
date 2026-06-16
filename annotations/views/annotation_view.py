@@ -14,6 +14,7 @@ from annotations.serializers import (
     JobAnnotationsReplaceSerializer,
 )
 from datasets.models import Media
+from core.access import project_access_q
 
 
 class AnnotationViewSet(viewsets.ModelViewSet):
@@ -23,7 +24,7 @@ class AnnotationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = Annotation.objects.filter(
-            media__dataset__project__team__members__user=user
+            project_access_q(user, 'media__dataset__project__')
         ).distinct().select_related('class_label', 'annotator', 'media')
 
         media_id = self.request.query_params.get('media')
@@ -54,8 +55,8 @@ class AnnotationViewSet(viewsets.ModelViewSet):
         if not ids:
             return Response({'error': 'ids list required.'}, status=status.HTTP_400_BAD_REQUEST)
         Annotation.objects.filter(
+            project_access_q(request.user, 'media__dataset__project__'),
             id__in=ids,
-            media__dataset__project__team__members__user=request.user,
         ).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 

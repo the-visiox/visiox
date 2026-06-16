@@ -32,6 +32,7 @@ from datasets.standalone import (
     image_media_for_frame,
     guess_content_type,
     ordered_image_media,
+    raw_image_media,
 )
 
 logger = logging.getLogger(__name__)
@@ -350,7 +351,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
         count = min(int(data.get('count', 6)), 12)
 
         pre_pipeline, aug_pipeline = _build_pipelines(pre, aug)
-        media_list = list(ordered_image_media(dataset)[:count])
+        media_list = raw_image_media(dataset)[:count]
         previews = []
 
         for media in media_list:
@@ -385,7 +386,8 @@ class DatasetViewSet(viewsets.ModelViewSet):
         multiplier = max(1, min(int(data.get('multiplier', 1)), 5))
 
         pre_pipeline, aug_pipeline = _build_pipelines(pre, aug)
-        media_list = list(ordered_image_media(dataset))
+        # Only augment original images — never re-augment previously generated ones.
+        media_list = raw_image_media(dataset)
         generated = 0
 
         for media in media_list:
@@ -410,6 +412,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
                         original_filename=aug_name,
                         width=pil_out.width,
                         height=pil_out.height,
+                        metadata={'category': 'augmented'},
                     )
                     new_media._upload_category = 'augmented'
                     new_media.file.save(f'{aug_name}.jpg', ContentFile(buf.read()), save=True)
