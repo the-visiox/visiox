@@ -1,6 +1,7 @@
 import json
 import logging
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import viewsets, status
@@ -18,7 +19,7 @@ from core.jwt_query_auth import JWTAuthQueryOrHeader
 from annotations.models import Annotation
 from annotations.serializers import AnnotationSerializer, JobAnnotationsReplaceSerializer
 from core.permissions import HasPerm
-from datasets.models import Dataset, Media
+from datasets.models import AugmentationJob, Dataset, Media
 from datasets.serializers import (
     DatasetSerializer,
     MediaSerializer,
@@ -57,8 +58,8 @@ def _media_display_name(media) -> str:
     return f'media-{media.id}'
 
 
-def _build_pipelines(pre: dict, aug: dict):
-    """Build Albumentations preprocessing and augmentation pipelines from config dicts."""
+def _build_transform_lists(pre: dict, aug: dict):
+    """Build the Albumentations preprocessing and augmentation transform lists."""
     import cv2
     import albumentations as A
 
@@ -67,7 +68,6 @@ def _build_pipelines(pre: dict, aug: dict):
         pre_transforms.append(A.Resize(height=int(pre['resize_height']), width=int(pre['resize_width'])))
     if pre.get('grayscale'):
         pre_transforms.append(A.ToGray(num_output_channels=3, p=1.0))
-    pre_pipeline = A.Compose(pre_transforms) if pre_transforms else None
 
     aug_transforms = []
     if aug.get('flip_h'):
@@ -103,8 +103,17 @@ def _build_pipelines(pre: dict, aug: dict):
         aug_transforms.append(A.MotionBlur(blur_limit=(k, k), p=1.0))
     if aug.get('cutout'):
         aug_transforms.append(A.CoarseDropout(num_holes_range=(4, 8), hole_height_range=(0.05, 0.15), hole_width_range=(0.05, 0.15), p=1.0))
-    aug_pipeline = A.Compose(aug_transforms) if aug_transforms else None
 
+    return pre_transforms, aug_transforms
+
+
+def _build_pipelines(pre: dict, aug: dict):
+    """Build Albumentations preprocessing and augmentation pipelines from config dicts."""
+    import albumentations as A
+
+    pre_transforms, aug_transforms = _build_transform_lists(pre, aug)
+    pre_pipeline = A.Compose(pre_transforms) if pre_transforms else None
+    aug_pipeline = A.Compose(aug_transforms) if aug_transforms else None
     return pre_pipeline, aug_pipeline
 
 
@@ -125,6 +134,21 @@ def _load_media_np(media, pre: dict, pre_pipeline) -> 'np.ndarray':
     return img_np
 
 
+def _make_thumbnail_bytes(image_bytes: bytes, max_size: int = 400, quality: int = 70) -> bytes:
+    """Downscale + re-encode to a small JPEG for gallery views."""
+    import io
+    from PIL import Image, ImageOps
+
+    img = Image.open(io.BytesIO(image_bytes))
+    img = ImageOps.exif_transpose(img)
+    if img.mode not in ('RGB', 'L'):
+        img = img.convert('RGB')
+    img.thumbnail((max_size, max_size))
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=quality)
+    return buf.getvalue()
+
+
 def _media_name_exists(dataset: Dataset, name: str) -> bool:
     if not name:
         return False
@@ -133,6 +157,177 @@ def _media_name_exists(dataset: Dataset, name: str) -> bool:
 
 def _existing_media_names_in_dataset(dataset: Dataset, names: list[str]) -> set[str]:
     return set(dataset.media_files.filter(original_filename__in=names).values_list('original_filename', flat=True))
+
+
+def _augment_dataset(dataset: Dataset, pre: dict, aug: dict, multiplier: int, progress=None) -> int:
+    """Generate `multiplier` augmented copies of each original image, carrying the
+    annotations (and per-image label profile) through the same transform so labels
+    follow the augmentation. Calls progress(done, generated) after every copy."""
+    import io
+    from collections import defaultdict
+    import albumentations as A
+    from PIL import Image
+    from django.core.files.base import ContentFile
+    from datasets.models import MediaLabelProfile
+
+    pre_transforms, aug_transforms = _build_transform_lists(pre, aug)
+    transforms = pre_transforms + aug_transforms
+    ann_pipeline = A.Compose(
+        transforms,
+        bbox_params=A.BboxParams(format='pascal_voc', label_fields=['bbox_idx'], clip=True, min_visibility=0.0),
+        keypoint_params=A.KeypointParams(format='xy', label_fields=['kp_idx'], remove_invisible=False),
+    ) if transforms else None
+
+    def _clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+
+    media_list = raw_image_media(dataset)
+    generated = 0
+    done = 0
+
+    for media in media_list:
+        try:
+            raw_np = _load_media_np(media, {'auto_orient': pre.get('auto_orient')}, None)
+            src_h, src_w = raw_np.shape[:2]
+            original_stem = _media_display_name(media).rsplit('.', 1)[0]
+            src_anns = list(
+                Annotation.objects.filter(media=media, is_valid=True).select_related('class_label')
+            )
+            src_profile = MediaLabelProfile.objects.filter(media=media).values_list('labels', flat=True).first()
+
+            base_bboxes, base_bbox_idx = [], []
+            base_kps, base_kp_idx = [], []
+            for ai, ann in enumerate(src_anns):
+                d = ann.data or {}
+                t = ann.type
+                if t in ('bbox', 'rectangle'):
+                    x = _clamp(float(d.get('x', 0)), 0, src_w)
+                    y = _clamp(float(d.get('y', 0)), 0, src_h)
+                    x2 = _clamp(x + float(d.get('width', 0)), 0, src_w)
+                    y2 = _clamp(y + float(d.get('height', 0)), 0, src_h)
+                    if x2 > x and y2 > y:
+                        base_bboxes.append([x, y, x2, y2])
+                        base_bbox_idx.append(ai)
+                elif t in ('polygon', 'polyline', 'point'):
+                    pts = d.get('points', []) or []
+                    for vi in range(0, len(pts) - 1, 2):
+                        base_kps.append((_clamp(float(pts[vi]), 0, src_w), _clamp(float(pts[vi + 1]), 0, src_h)))
+                        base_kp_idx.append(ai)
+                elif t == 'tag':
+                    base_kps.append((_clamp(float(d.get('x', 0)), 0, src_w), _clamp(float(d.get('y', 0)), 0, src_h)))
+                    base_kp_idx.append(ai)
+        except Exception:
+            logger.exception('Failed to prepare augmentation for media %d', media.id)
+            done += multiplier
+            if progress:
+                progress(done, generated)
+            continue
+
+        for i in range(multiplier):
+            try:
+                if ann_pipeline is not None:
+                    out = ann_pipeline(
+                        image=raw_np,
+                        bboxes=list(base_bboxes), bbox_idx=list(base_bbox_idx),
+                        keypoints=list(base_kps), kp_idx=list(base_kp_idx),
+                    )
+                    img_np = out['image']
+                    t_bboxes, t_bbox_idx = out['bboxes'], out['bbox_idx']
+                    t_kps, t_kp_idx = out['keypoints'], out['kp_idx']
+                else:
+                    img_np = raw_np
+                    t_bboxes, t_bbox_idx = base_bboxes, base_bbox_idx
+                    t_kps, t_kp_idx = base_kps, base_kp_idx
+
+                out_h, out_w = img_np.shape[:2]
+                pil_out = Image.fromarray(img_np)
+                buf = io.BytesIO()
+                pil_out.save(buf, format='JPEG', quality=88)
+                full_bytes = buf.getvalue()
+
+                aug_name = f'aug_{i + 1}_{original_stem}.jpg'
+                new_media = Media(
+                    dataset=dataset, type='image', original_filename=aug_name,
+                    width=pil_out.width, height=pil_out.height, metadata={'category': 'augmented'},
+                )
+                new_media._upload_category = 'augmented'
+                new_media.file.save(aug_name, ContentFile(full_bytes), save=True)
+                # Precompute the gallery thumbnail now (image already in memory).
+                try:
+                    new_media.thumbnail.save(f'{aug_name}', ContentFile(_make_thumbnail_bytes(full_bytes)), save=True)
+                except Exception:
+                    logger.exception('Failed to build thumbnail for augmented media %s', new_media.id)
+
+                new_anns = []
+                for bb, ai in zip(t_bboxes, t_bbox_idx):
+                    x_min, y_min, x_max, y_max = (round(float(v), 2) for v in bb)
+                    src = src_anns[int(ai)]
+                    new_anns.append(Annotation(
+                        media=new_media, class_label=src.class_label, annotator=src.annotator,
+                        type=src.type, frame=0,
+                        data={'x': x_min, 'y': y_min, 'width': round(x_max - x_min, 2), 'height': round(y_max - y_min, 2)},
+                    ))
+                grouped = defaultdict(list)
+                for (kx, ky), ai in zip(t_kps, t_kp_idx):
+                    grouped[int(ai)].append((round(_clamp(float(kx), 0, out_w), 2), round(_clamp(float(ky), 0, out_h), 2)))
+                for ai, pts in grouped.items():
+                    src = src_anns[ai]
+                    ann_data = {'x': pts[0][0], 'y': pts[0][1]} if src.type == 'tag' else {'points': [c for p in pts for c in p]}
+                    new_anns.append(Annotation(
+                        media=new_media, class_label=src.class_label, annotator=src.annotator,
+                        type=src.type, frame=0, data=ann_data,
+                    ))
+                if new_anns:
+                    Annotation.objects.bulk_create(new_anns)
+                # Carry the per-image label roster so the augmented frame's LABELS panel matches the origin.
+                if src_profile:
+                    MediaLabelProfile.objects.update_or_create(media=new_media, defaults={'labels': src_profile})
+                generated += 1
+            except Exception:
+                logger.exception('Failed to apply augmentation for media %d', media.id)
+            finally:
+                done += 1
+                if progress:
+                    progress(done, generated)
+
+    return generated
+
+
+def run_augmentation_job(job_id: int, dataset_id: int, pre: dict, aug: dict, multiplier: int):
+    """Execute an augmentation job and persist progress to the AugmentationJob row.
+
+    Runs either in a background thread (dev) or a Celery worker (production) — the
+    DB-backed progress means any web worker can report status, and it survives
+    process restarts.
+    """
+    from django.db import connection
+    from django.utils import timezone
+
+    try:
+        dataset = Dataset.objects.get(id=dataset_id)
+        total = AugmentationJob.objects.filter(id=job_id).values_list('total', flat=True).first() or 0
+        step = max(1, total // 50)  # throttle DB writes to ~50 updates + final
+
+        def _progress(done, generated):
+            # updated_at doubles as a heartbeat for stale-job detection; .update()
+            # does not trigger auto_now, so set it explicitly.
+            if done % step == 0 or done >= total:
+                AugmentationJob.objects.filter(id=job_id).update(
+                    done=done, generated=generated, updated_at=timezone.now(),
+                )
+
+        _augment_dataset(dataset, pre, aug, multiplier, _progress)
+        AugmentationJob.objects.filter(id=job_id).update(status='done', updated_at=timezone.now())
+    except Exception as exc:
+        logger.exception('Augmentation job %s failed', job_id)
+        AugmentationJob.objects.filter(id=job_id).update(status='error', error=str(exc), updated_at=timezone.now())
+    finally:
+        connection.close()
+
+
+# A running job whose heartbeat (updated_at) is older than this is treated as dead
+# (worker crashed / was restarted mid-run).
+AUG_JOB_STALE_SECONDS = 300
 
 
 class DatasetViewSet(viewsets.ModelViewSet):
@@ -372,55 +567,54 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='augmentations')
     def augment_apply(self, request, pk=None):
-        import io
-        import numpy as np
-        import cv2
-        import albumentations as A
-        from PIL import Image, ImageOps
-        from django.core.files.base import ContentFile
+        import threading
 
         dataset = self.get_object()
         data = request.data
-        pre = data.get('preprocess', {})
-        aug = data.get('augment', {})
+        pre = dict(data.get('preprocess', {}) or {})
+        aug = dict(data.get('augment', {}) or {})
         multiplier = max(1, min(int(data.get('multiplier', 1)), 5))
 
-        pre_pipeline, aug_pipeline = _build_pipelines(pre, aug)
-        # Only augment original images — never re-augment previously generated ones.
-        media_list = raw_image_media(dataset)
-        generated = 0
+        total = len(raw_image_media(dataset)) * multiplier
+        job = AugmentationJob.objects.create(dataset=dataset, total=total, status='running')
 
-        for media in media_list:
-            try:
-                base_np = _load_media_np(media, pre, pre_pipeline)
-                original_name = _media_display_name(media)
+        # Production: hand off to a Celery worker (scales independently, survives web
+        # restarts). Dev/no-broker: run in a daemon thread. Both write progress to the
+        # AugmentationJob row, so any web worker can report status.
+        if getattr(settings, 'USE_CELERY', False):
+            from datasets.tasks import augment_dataset_task
+            augment_dataset_task.delay(job.id, dataset.id, pre, aug, multiplier)
+        else:
+            threading.Thread(
+                target=run_augmentation_job,
+                args=(job.id, dataset.id, pre, aug, multiplier),
+                daemon=True,
+            ).start()
 
-                for i in range(multiplier):
-                    img_np = base_np.copy()
-                    if aug_pipeline is not None:
-                        img_np = aug_pipeline(image=img_np)['image']
+        return Response({'job_id': str(job.id), 'total': total}, status=status.HTTP_202_ACCEPTED)
 
-                    pil_out = Image.fromarray(img_np)
-                    buf = io.BytesIO()
-                    pil_out.save(buf, format='JPEG', quality=88)
-                    buf.seek(0)
+    @action(detail=True, methods=['get'], url_path='augmentations/status')
+    def augment_status(self, request, pk=None):
+        self.get_object()  # enforce dataset access scope
+        try:
+            job = AugmentationJob.objects.get(id=request.query_params.get('job'), dataset_id=pk)
+        except (AugmentationJob.DoesNotExist, ValueError, TypeError):
+            return Response({'detail': 'Unknown augmentation job.'}, status=status.HTTP_404_NOT_FOUND)
 
-                    aug_name = f'aug_{i + 1}_{original_name}'
-                    new_media = Media(
-                        dataset=dataset,
-                        type='image',
-                        original_filename=aug_name,
-                        width=pil_out.width,
-                        height=pil_out.height,
-                        metadata={'category': 'augmented'},
-                    )
-                    new_media._upload_category = 'augmented'
-                    new_media.file.save(f'{aug_name}.jpg', ContentFile(buf.read()), save=True)
-                    generated += 1
-            except Exception:
-                logger.exception('Failed to apply augmentation for media %d', media.id)
+        # Self-heal jobs whose worker died mid-run (no heartbeat) so the client
+        # stops polling forever.
+        if job.status == 'running':
+            from django.utils import timezone
+            age = (timezone.now() - job.updated_at).total_seconds()
+            if age > AUG_JOB_STALE_SECONDS:
+                job.status = 'error'
+                job.error = 'Augmentation stopped unexpectedly (worker no longer reporting progress).'
+                job.save(update_fields=['status', 'error'])
 
-        return Response({'generated': generated, 'total': len(media_list) * multiplier})
+        return Response({
+            'total': job.total, 'done': job.done, 'generated': job.generated,
+            'status': job.status, 'error': job.error,
+        })
 
     @action(detail=True, methods=['get'], url_path=r'frames/(?P<frame_num>\d+)',
             authentication_classes=[JWTAuthQueryOrHeader], permission_classes=[IsAuthenticated])
@@ -443,12 +637,42 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return HttpResponse(b'Invalid frame', status=400, content_type='text/plain')
         if not media or not media.file:
             return HttpResponse(b'Frame not found', status=404, content_type='text/plain')
+
+        want_thumb = request.query_params.get('quality') == 'thumb'
+
+        # Fast path: serve the precomputed thumbnail straight from storage (no decode,
+        # no full-image read). CDN-cacheable.
+        if want_thumb and media.thumbnail:
+            try:
+                with media.thumbnail.open('rb') as tf:
+                    thumb_bytes = tf.read()
+                response = HttpResponse(thumb_bytes, content_type='image/jpeg')
+                response['Cache-Control'] = 'public, max-age=86400'
+                return response
+            except Exception:
+                logger.exception('Failed to read thumbnail for media %s', media.id)
+
         try:
             with media.file.open('rb') as f:
                 image_bytes = f.read()
         except Exception:
             logger.exception('Failed to read media file for dataset %s frame %s', dataset.id, frame_num)
             return HttpResponse(b'Failed to load frame', status=500, content_type='text/plain')
+
+        # Thumbnail not precomputed yet (e.g. legacy media): build once, persist to
+        # storage, and serve. Subsequent requests hit the fast path above.
+        if want_thumb:
+            try:
+                from django.core.files.base import ContentFile
+                thumb_bytes = _make_thumbnail_bytes(image_bytes)
+                media.thumbnail.save(f'{media.id}.jpg', ContentFile(thumb_bytes), save=True)
+                response = HttpResponse(thumb_bytes, content_type='image/jpeg')
+                response['Cache-Control'] = 'public, max-age=86400'
+                return response
+            except Exception:
+                logger.exception('Failed to build thumbnail for dataset %s frame %s', dataset.id, frame_num)
+                # fall through to full image
+
         response = HttpResponse(image_bytes, content_type=guess_content_type(media))
         response['Cache-Control'] = 'public, max-age=3600'
         return response

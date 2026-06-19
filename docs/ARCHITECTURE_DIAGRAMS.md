@@ -520,7 +520,7 @@ flowchart LR
     ArtifactUpload --> ArtifactStorage --> M2
 
     subgraph Path["Object path  (visiox-media)"]
-        P["orgs/{id}_{slug}/\n  projects/{id}_{slug}/\n    datasets/{id}_{slug}/\n      v{version}/\n        raw|augmented/\n          {filename}"]
+        P["orgs/{id}_{slug}/\n  projects/{id}_{slug}/\n    datasets/{id}_{slug}/\n      v{version}/\n        raw|augmented/\n          {filename}\n          thumbs/{filename}"]
     end
 
     subgraph Path2["Object path  (visiox-artifacts)"]

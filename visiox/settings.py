@@ -84,6 +84,11 @@ DATABASES = {
         'OPTIONS': {
             'connect_timeout': int(os.getenv('DATABASE_CONNECT_TIMEOUT', '5')),
         },
+        # Persistent connections: reuse across requests instead of opening a new
+        # one each time. With many web replicas, put PgBouncer in front and keep
+        # this modest. 0 = close after each request (default).
+        'CONN_MAX_AGE': int(os.getenv('DATABASE_CONN_MAX_AGE', '60')),
+        'CONN_HEALTH_CHECKS': True,
     },
 }
 
@@ -180,6 +185,9 @@ SPECTACULAR_SETTINGS = {
 }
 
 # Celery
+# When True, long jobs (augmentation) are dispatched to Celery workers; otherwise
+# they run in a background thread (fine for the dev server). Turn on in production.
+USE_CELERY = os.getenv('USE_CELERY', 'False') == 'True'
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']

@@ -30,6 +30,18 @@ def media_upload_path(instance, filename):
     return f"users/{owner_folder}/projects/{project_folder}/datasets/{dataset_folder}/v{dataset.version}/{category}/{filename}"
 
 
+def media_thumb_path(instance, filename):
+    """Store the thumbnail next to its original under a `thumbs/` subfolder, so it
+    inherits the same owner/project/dataset/category path. Derived from the saved
+    original path (reliable) rather than the upload category flag."""
+    base = instance.file.name if instance.file else ''
+    if base and '/' in base:
+        head, tail = base.rsplit('/', 1)
+        stem = tail.rsplit('.', 1)[0]
+        return f"{head}/thumbs/{stem}.jpg"
+    return f"thumbs/{filename}"
+
+
 class Dataset(models.Model):
     project = models.ForeignKey(
         'projects.Project',
@@ -67,6 +79,8 @@ class Media(models.Model):
     )
     type = models.CharField(max_length=50, choices=MEDIA_TYPE_CHOICES)
     file = models.FileField(upload_to=media_upload_path, max_length=500)
+    # Precomputed gallery thumbnail (built once, then served from storage / CDN).
+    thumbnail = models.FileField(upload_to=media_thumb_path, max_length=500, null=True, blank=True)
     original_filename = models.CharField(max_length=255, blank=True)
     width = models.IntegerField(null=True, blank=True)
     height = models.IntegerField(null=True, blank=True)
@@ -103,3 +117,34 @@ class MediaLabelProfile(models.Model):
 
     def __str__(self):
         return f"Label profile for media {self.media_id}"
+
+
+class AugmentationJob(models.Model):
+    """Tracks a dataset-augmentation run so progress is shared across all web
+    workers and survives process restarts (instead of an in-memory dict)."""
+
+    STATUS_CHOICES = [
+        ('running', 'Running'),
+        ('done', 'Done'),
+        ('error', 'Error'),
+    ]
+
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name='augmentation_jobs',
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='running')
+    total = models.PositiveIntegerField(default=0)
+    done = models.PositiveIntegerField(default=0)
+    generated = models.PositiveIntegerField(default=0)
+    error = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'augmentation_jobs'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"AugmentationJob {self.id} ({self.status}) {self.done}/{self.total}"
