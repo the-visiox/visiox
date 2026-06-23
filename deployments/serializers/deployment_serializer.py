@@ -48,12 +48,32 @@ class InferenceEndpointSerializer(serializers.ModelSerializer):
 class MonitoringLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = MonitoringLog
-        fields = ['id', 'endpoint', 'confidence', 'prediction', 'latency_ms', 'is_flagged', 'flagged_reason', 'timestamp']
+        fields = [
+            'id',
+            'endpoint',
+            'confidence',
+            'prediction',
+            'latency_ms',
+            'is_flagged',
+            'flagged_reason',
+            'timestamp',
+        ]
         read_only_fields = ['id', 'is_flagged', 'flagged_reason', 'timestamp']
 
 
 class DriftAlertSerializer(serializers.ModelSerializer):
     class Meta:
         model = DriftAlert
-        fields = ['id', 'endpoint', 'severity', 'metric', 'threshold', 'observed_value', 'details', 'is_resolved', 'created_at', 'resolved_at']
+        fields = [
+            'id',
+            'endpoint',
+            'severity',
+            'metric',
+            'threshold',
+            'observed_value',
+            'details',
+            'is_resolved',
+            'created_at',
+            'resolved_at',
+        ]
         read_only_fields = ['id', 'created_at', 'resolved_at']

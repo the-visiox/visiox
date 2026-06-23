@@ -135,7 +135,10 @@ class LabelingTaskViewSet(viewsets.ModelViewSet):
     def submit_for_review(self, request, pk=None):
         task = self.get_object()
         if task.status != 'completed':
-            return Response({'error': 'Only completed tasks can be submitted for review.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Only completed tasks can be submitted for review.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         task.status = 'review'
         task.save()
         return Response(LabelingTaskSerializer(task, context={'request': request}).data)

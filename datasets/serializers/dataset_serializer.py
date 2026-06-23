@@ -9,11 +9,27 @@ class MediaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Media
         fields = [
-            'id', 'dataset', 'type', 'file', 'file_url',
-            'original_filename', 'width', 'height', 'file_size',
-            'metadata', 'uploaded_at',
+            'id',
+            'dataset',
+            'type',
+            'file',
+            'file_url',
+            'original_filename',
+            'width',
+            'height',
+            'file_size',
+            'metadata',
+            'uploaded_at',
         ]
-        read_only_fields = ['id', 'file_url', 'original_filename', 'width', 'height', 'file_size', 'uploaded_at']
+        read_only_fields = [
+            'id',
+            'file_url',
+            'original_filename',
+            'width',
+            'height',
+            'file_size',
+            'uploaded_at',
+        ]
 
     def get_file_url(self, obj):
         request = self.context.get('request')
@@ -43,7 +59,18 @@ class DatasetSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Dataset
-        fields = ['id', 'project', 'name', 'description', 'version', 'media_count', 'annotated_count', 'thumbnail', 'created_at', 'updated_at']
+        fields = [
+            'id',
+            'project',
+            'name',
+            'description',
+            'version',
+            'media_count',
+            'annotated_count',
+            'thumbnail',
+            'created_at',
+            'updated_at',
+        ]
         read_only_fields = ['id', 'version', 'created_at', 'updated_at']
 
     def get_media_count(self, obj) -> int:

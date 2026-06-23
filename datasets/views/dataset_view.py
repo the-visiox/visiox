@@ -102,7 +102,14 @@ def _build_transform_lists(pre: dict, aug: dict):
             k += 1
         aug_transforms.append(A.MotionBlur(blur_limit=(k, k), p=1.0))
     if aug.get('cutout'):
-        aug_transforms.append(A.CoarseDropout(num_holes_range=(4, 8), hole_height_range=(0.05, 0.15), hole_width_range=(0.05, 0.15), p=1.0))
+        aug_transforms.append(
+            A.CoarseDropout(
+                num_holes_range=(4, 8),
+                hole_height_range=(0.05, 0.15),
+                hole_width_range=(0.05, 0.15),
+                p=1.0,
+            )
+        )
 
     return pre_transforms, aug_transforms
 
@@ -265,14 +272,34 @@ def _augment_dataset(dataset: Dataset, pre: dict, aug: dict, multiplier: int, pr
                     new_anns.append(Annotation(
                         media=new_media, class_label=src.class_label, annotator=src.annotator,
                         type=src.type, frame=0,
-                        data={'x': x_min, 'y': y_min, 'width': round(x_max - x_min, 2), 'height': round(y_max - y_min, 2)},
+                        data={
+                            'x': x_min,
+                            'y': y_min,
+                            'width': round(x_max - x_min, 2),
+                            'height': round(y_max - y_min, 2),
+                        },
                     ))
                 grouped = defaultdict(list)
                 for (kx, ky), ai in zip(t_kps, t_kp_idx):
-                    grouped[int(ai)].append((round(_clamp(float(kx), 0, out_w), 2), round(_clamp(float(ky), 0, out_h), 2)))
+                    grouped[int(ai)].append(
+                        (
+                            round(_clamp(float(kx), 0, out_w), 2),
+                            round(_clamp(float(ky), 0, out_h), 2),
+                        )
+                    )
                 for ai, pts in grouped.items():
                     src = src_anns[ai]
-                    ann_data = {'x': pts[0][0], 'y': pts[0][1]} if src.type == 'tag' else {'points': [c for p in pts for c in p]}
+                    ann_data = (
+                        {'x': pts[0][0], 'y': pts[0][1]}
+                        if src.type == 'tag'
+                        else {
+                            'points': [
+                                coordinate
+                                for point in pts
+                                for coordinate in point
+                            ]
+                        }
+                    )
                     new_anns.append(Annotation(
                         media=new_media, class_label=src.class_label, annotator=src.annotator,
                         type=src.type, frame=0, data=ann_data,
@@ -453,7 +480,10 @@ class DatasetViewSet(viewsets.ModelViewSet):
         dataset = self.get_object()
         files = request.FILES.getlist('files')
         if not files:
-            return Response({'detail': 'No files provided. Use form field "files".'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'detail': 'No files provided. Use form field "files".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if len(files) > 100:
             return Response({'detail': 'Maximum 100 files per request.'}, status=status.HTTP_400_BAD_REQUEST)
 

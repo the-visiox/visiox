@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 from django.http import HttpResponse
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
+from rest_framework.negotiation import DefaultContentNegotiation
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -21,10 +24,18 @@ EXPORTERS = {
 _TRUTHY = {'1', 'true', 'yes', 'on'}
 
 
+class DatasetExportContentNegotiation(DefaultContentNegotiation):
+    """Keep DRF from treating the legacy ``format`` query as a renderer."""
+
+    settings = SimpleNamespace(URL_FORMAT_OVERRIDE=None)
+
+
 class DatasetExportView(APIView):
+    content_negotiation_class = DatasetExportContentNegotiation
+
     @extend_schema(
         parameters=[
-            OpenApiParameter('format', OpenApiTypes.STR, OpenApiParameter.QUERY,
+            OpenApiParameter('export_format', OpenApiTypes.STR, OpenApiParameter.QUERY,
                              enum=list(EXPORTERS), description='Export format'),
             OpenApiParameter('save_images', OpenApiTypes.BOOL, OpenApiParameter.QUERY,
                              description='Include source images in the archive'),
@@ -40,7 +51,10 @@ class DatasetExportView(APIView):
         except Dataset.DoesNotExist:
             return Response({'error': 'Dataset not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        fmt = request.query_params.get('format', 'coco').lower()
+        fmt = request.query_params.get(
+            'export_format',
+            request.query_params.get('format', 'coco'),
+        ).lower()
         exporter = EXPORTERS.get(fmt)
         if exporter is None:
             return Response(

@@ -6,14 +6,36 @@ from training.models import ModelArchitecture, TrainingJob, Experiment, RunMetri
 class ModelArchitectureSerializer(serializers.ModelSerializer):
     class Meta:
         model = ModelArchitecture
-        fields = ['id', 'name', 'backbone', 'task_type', 'description', 'default_config', 'is_builtin', 'created_at']
+        fields = [
+            'id',
+            'name',
+            'backbone',
+            'task_type',
+            'description',
+            'default_config',
+            'is_builtin',
+            'created_at',
+        ]
         read_only_fields = ['id', 'created_at']
 
 
 class RunMetricSerializer(serializers.ModelSerializer):
     class Meta:
         model = RunMetric
-        fields = ['id', 'experiment', 'epoch', 'step', 'loss', 'val_loss', 'map50', 'map75', 'f1', 'accuracy', 'extra', 'recorded_at']
+        fields = [
+            'id',
+            'experiment',
+            'epoch',
+            'step',
+            'loss',
+            'val_loss',
+            'map50',
+            'map75',
+            'f1',
+            'accuracy',
+            'extra',
+            'recorded_at',
+        ]
         read_only_fields = ['id', 'recorded_at']
 
 
@@ -40,7 +62,17 @@ class TrainingJobSerializer(serializers.ModelSerializer):
             'started_at', 'finished_at', 'created_at', 'updated_at',
             'experiment_count',
         ]
-        read_only_fields = ['id', 'created_by', 'status', 'celery_task_id', 'error_message', 'started_at', 'finished_at', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id',
+            'created_by',
+            'status',
+            'celery_task_id',
+            'error_message',
+            'started_at',
+            'finished_at',
+            'created_at',
+            'updated_at',
+        ]
 
     def get_experiment_count(self, obj) -> int:
         return obj.experiments.count()

@@ -27,7 +27,10 @@ def media_upload_path(instance, filename):
     project_folder = f"{project.id}_{_slug(project.name)}"
     dataset_folder = f"{dataset.id}_{_slug(dataset.name)}"
 
-    return f"users/{owner_folder}/projects/{project_folder}/datasets/{dataset_folder}/v{dataset.version}/{category}/{filename}"
+    return (
+        f"users/{owner_folder}/projects/{project_folder}/"
+        f"datasets/{dataset_folder}/v{dataset.version}/{category}/{filename}"
+    )
 
 
 def media_thumb_path(instance, filename):

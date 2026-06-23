@@ -202,7 +202,7 @@ Tất cả endpoints có prefix `/api/v1/`. Thiết kế theo chuẩn REST:
 | | POST | `/api/v1/datasets/{id}/augmentations/preview/` | Xem trước augmentation |
 | | POST | `/api/v1/datasets/{id}/augmentations/` | Áp dụng augmentation |
 | | GET | `/api/v1/datasets/{id}/frames/{n}/` | Ảnh frame theo index |
-| | GET | `/api/v1/datasets/{id}/export/?format={coco,yolo,voc}` | Export annotations |
+| | GET | `/api/v1/datasets/{id}/export/?export_format={coco,yolo,voc,mask,coco_keypoints,imagenet}` | Export annotations |
 | **Labels** | GET/POST | `/api/v1/classes/?project={id}` | Classes của project |
 | | PATCH/DELETE | `/api/v1/classes/{id}/` | Cập nhật / xoá class |
 | **Annotations** | GET/PUT | `/api/v1/datasets/{id}/frames/{n}/annotations/` | Lấy / lưu annotations |
@@ -243,6 +243,8 @@ Default allowed origins include `http://localhost:3000` and `http://127.0.0.1:30
 
 ```bash
 python manage.py runserver 0.0.0.0:8000
+python scripts/check_line_length.py
+python manage.py test
 celery -A visiox worker -l info
 celery -A visiox beat -l info
 python manage.py makemigrations

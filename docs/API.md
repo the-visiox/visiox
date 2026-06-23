@@ -701,13 +701,16 @@ Receive webhook events from CVAT. **Auth required:** No
 
 ---
 
-### GET `/api/datasets/{dataset_id}/export/`
+### GET `/api/v1/datasets/{dataset_id}/export/`
 Export annotations to other formats.
 
 **Query params:**
-- `format` — `coco` (default), `yolo`, `voc`
+- `export_format` — `coco` (default), `yolo`, `voc`, `mask`, `coco_keypoints`, `imagenet`
+- `save_images` — include source images in the ZIP (`true`/`false`, default `false`)
 
-**Response `200`:** Binary file (JSON or ZIP)
+The legacy `format` query parameter remains supported for compatibility.
+
+**Response `200`:** ZIP archive (`application/zip`)
 
 ---
 
