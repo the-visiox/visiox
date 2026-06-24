@@ -1,6 +1,8 @@
 import re
 
 from django.db import models
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 
 def _slug(name: str) -> str:
@@ -98,6 +100,20 @@ class Media(models.Model):
 
     def __str__(self):
         return f"{self.type} - {self.original_filename or self.file.name}"
+
+
+@receiver(post_delete, sender=Media)
+def delete_media_storage_files(sender, instance, **kwargs):
+    """Remove files from storage when a media row is deleted.
+
+    Django deletes database rows on cascade, but FileField contents are not
+    removed automatically. Keep the original and generated thumbnail in sync
+    with the database lifecycle.
+    """
+    if instance.file:
+        instance.file.delete(save=False)
+    if instance.thumbnail:
+        instance.thumbnail.delete(save=False)
 
 
 class MediaLabelProfile(models.Model):

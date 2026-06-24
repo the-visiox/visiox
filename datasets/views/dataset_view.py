@@ -424,8 +424,6 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
             deleted_ids: list[int] = []
             for m in list(qs):
-                if m.file:
-                    m.file.delete(save=False)
                 deleted_ids.append(m.id)
                 m.delete()
             return Response({'deleted': len(deleted_ids), 'ids': deleted_ids})
