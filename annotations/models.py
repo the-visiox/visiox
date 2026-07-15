@@ -11,7 +11,7 @@ class Class(models.Model):
         related_name='classes'
     )
     name = models.CharField(max_length=255)
-    color = models.CharField(max_length=7, default='#000000')  # Hex color code
+    color = models.CharField(max_length=7, default='#E66700')  # Hex color code
     attributes = models.JSONField(default=dict, blank=True)  # Custom attributes for the class
     created_at = models.DateTimeField(auto_now_add=True)
 

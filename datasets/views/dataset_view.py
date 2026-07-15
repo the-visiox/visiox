@@ -516,6 +516,30 @@ def _clamp_float(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+YOLO_CLASS_COLOR_PALETTE = (
+    '#22c55e',
+    '#38bdf8',
+    '#3b82f6',
+    '#6366f1',
+    '#8b5cf6',
+    '#a855f7',
+    '#d946ef',
+    '#ec4899',
+    '#f43f5e',
+    '#ef4444',
+    '#f97316',
+    '#f59e0b',
+    '#eab308',
+    '#84cc16',
+    '#14b8a6',
+    '#64748b',
+)
+
+
+def _yolo_class_color(index: int) -> str:
+    return YOLO_CLASS_COLOR_PALETTE[index % len(YOLO_CLASS_COLOR_PALETTE)]
+
+
 def _yolo_class_index_offset(class_ids: set[int], class_count: int) -> int:
     """Return 0 for standard YOLO ids or 1 for an unambiguous 1-based export."""
     if not class_ids:
@@ -872,8 +896,16 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
         }
         with transaction.atomic():
             classes = []
-            for class_name in class_names:
-                class_obj, _ = Class.objects.get_or_create(project=dataset.project, name=class_name)
+            for class_index, class_name in enumerate(class_names):
+                class_color = _yolo_class_color(class_index)
+                class_obj, created = Class.objects.get_or_create(
+                    project=dataset.project,
+                    name=class_name,
+                    defaults={'color': class_color},
+                )
+                if not created and class_obj.color.lower() == '#000000':
+                    class_obj.color = class_color
+                    class_obj.save(update_fields=['color'])
                 classes.append(class_obj)
 
             dataset.project.owner

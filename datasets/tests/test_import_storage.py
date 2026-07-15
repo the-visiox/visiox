@@ -12,6 +12,7 @@ from datasets.views.dataset_view import (
     _duplicate_names_error,
     _read_yolo_label_rows,
     _save_media_batch,
+    _yolo_class_color,
     _yolo_class_index_offset,
 )
 
@@ -79,6 +80,13 @@ class DatasetImportStorageTests(SimpleTestCase):
 
     def test_standard_yolo_class_ids_keep_zero_based_index(self):
         self.assertEqual(_yolo_class_index_offset({0, 2}, 3), 0)
+
+    def test_yolo_class_colors_are_distinct_and_repeat_safely(self):
+        colors = [_yolo_class_color(index) for index in range(4)]
+
+        self.assertEqual(len(set(colors)), 4)
+        self.assertTrue(all(color != '#000000' for color in colors))
+        self.assertEqual(_yolo_class_color(16), colors[0])
 
     def test_unambiguous_one_based_yolo_class_ids_are_normalized(self):
         self.assertEqual(_yolo_class_index_offset({1, 3}, 3), 1)
