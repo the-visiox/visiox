@@ -1,6 +1,9 @@
 # VisioX — Product Roadmap
 
-> **Engineering setup:** For running the Visiox API, database, and pairing with **visiox-ui**, see the repo root **`README.md`** (Docker vs `localhost`, ports `5432` / `5433`, JWT, CORS).
+> **Engineering setup:** See the repository [README](../README.md) for the
+> deployed `.9/.20` topology, MinIO, non-root workers and queue routing. The
+> detailed `.20` runbook is
+> [DEPLOY_DATASET_WORKER_MINIO.md](DEPLOY_DATASET_WORKER_MINIO.md).
 
 > Reference: [Datature.io](https://datature.io) — All-in-One Vision AI Platform
 

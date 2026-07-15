@@ -11,6 +11,34 @@ Source files:
 
 ---
 
+## 0. Current Physical Deployment
+
+```mermaid
+flowchart LR
+    UI["visiox-ui\n:3000"] --> API["10.29.30.9\nDjango API :8000"]
+    API --> PG[("10.29.30.20\nPostgreSQL :5432")]
+    API --> Redis[("10.29.30.20\nRedis :6379")]
+    API --> MinIO[("10.29.30.20\nMinIO :9000")]
+
+    Redis --> General[".9 general-worker\nqueue: celery\nconcurrency: 2"]
+    Redis --> Dataset[".20 dataset-worker\nqueue: datasets\nconcurrency: 1"]
+    Redis --> GPU["GPU worker\nqueue: gpu_training"]
+
+    General --> PG
+    General --> MinIO
+    Dataset --> PG
+    Dataset --> MinIO
+
+    classDef hardened fill:#e8f5e9,stroke:#2e7d32;
+    class General,Dataset hardened;
+```
+
+The Django workers use `Dockerfile.worker` and run as `uid=10001(visiox)`.
+The `.20` infrastructure stack uses Compose project `infiniq`. Worker node
+suffixes are dynamic container IDs, not stable hostnames.
+
+---
+
 ## 1. System Architecture
 
 ```mermaid
@@ -22,7 +50,7 @@ flowchart LR
     subgraph Backend["VisioX Django Backend"]
         API["Django REST API\n(DRF + drf-spectacular)"]
         Auth["Auth layer\nJWT + API Key"]
-        CeleryW["Celery worker\nasync jobs"]
+        CeleryW["Celery workers\nqueue-specific async jobs"]
         CeleryB["Celery beat\nscheduled tasks"]
         Silk["Django Silk\nprofiler (DEBUG)"]
     end
@@ -110,7 +138,7 @@ flowchart TB
     DjangoAPI --> CVATSvc
     DjangoAPI --> Standalone
     CVATSvc -->|"cvat-sdk\n:8080"| CVATBackend
-    CVATBackend -->|"webhook events\n/api/datasets/cvat-webhook/"| DjangoAPI
+    CVATBackend -->|"webhook events\n/api/v1/datasets/cvat-webhook/"| DjangoAPI
     Frontend -->|"iframe SSO\n:8080"| CVATWeb
     CVATBackend --- CVATWeb
 ```
@@ -127,20 +155,20 @@ sequenceDiagram
     participant OAuth as OAuth Provider
 
     Note over Client,DB: Email / Password Login
-    Client->>API: POST /api/auth/login/ {username, password}
+    Client->>API: POST /api/v1/auth/login/ {username, password}
     API->>DB: Validate credentials
     DB-->>API: UserModel
     API-->>Client: {access_token (1h), refresh_token (7d), user}
 
     Note over Client,DB: Token Refresh
-    Client->>API: POST /api/auth/token/refresh/ {refresh}
+    Client->>API: POST /api/v1/auth/token/refresh/ {refresh}
     API->>DB: Validate + blacklist old refresh token
     API-->>Client: {access (new)}
 
     Note over Client,OAuth: OAuth Login (Google / GitHub)
     Client->>OAuth: Redirect to provider
     OAuth-->>Client: Authorization code
-    Client->>API: POST /api/auth/oauth/ {provider, code, redirect_uri}
+    Client->>API: POST /api/v1/auth/oauth/ {provider, code, redirect_uri}
     API->>OAuth: Exchange code for user info
     OAuth-->>API: User profile
     API->>DB: Get or create user
@@ -153,7 +181,7 @@ sequenceDiagram
     API-->>Client: Authorized response
 
     Note over Client,DB: Frame images (AllowAny — no auth required)
-    Client->>API: GET /api/datasets/{id}/frames/{n}/
+    Client->>API: GET /api/v1/datasets/{id}/frames/{n}/
     API-->>Client: Image bytes (no auth required)
 ```
 
@@ -169,7 +197,7 @@ sequenceDiagram
     participant Media as Media storage
     participant CVAT as CVAT API
 
-    UI->>API: POST /api/datasets/ {name, project}
+    UI->>API: POST /api/v1/datasets/ {name, project}
     API->>DB: Save Dataset record
     alt CVAT mode (default)
         API->>CVAT: Create CVAT project (if not exists)
@@ -180,14 +208,14 @@ sequenceDiagram
         API->>DB: Dataset stays native-only
     end
 
-    UI->>API: POST /api/datasets/{id}/upload/ (multipart)
+    UI->>API: POST /api/v1/datasets/{id}/upload/ (multipart)
     API->>Media: Store original file
     API->>DB: Save Media row (width, height, original_filename)
     alt CVAT mode + empty task
         API->>CVAT: Upload task data (one-time)
     end
 
-    UI->>API: GET /api/datasets/{id}/browser/
+    UI->>API: GET /api/v1/datasets/{id}/browser/
     alt CVAT mode
         API->>CVAT: Fetch labels, frame metadata, annotations
         API-->>UI: Merged browser payload + media IDs
@@ -196,7 +224,7 @@ sequenceDiagram
         API-->>UI: Native browser payload
     end
 
-    UI->>API: GET /api/datasets/{id}/frames/{n}/?token=<jwt>
+    UI->>API: GET /api/v1/datasets/{id}/frames/{n}/?token=<jwt>
     alt CVAT mode
         API->>CVAT: Fetch frame bytes
         API-->>UI: Proxied image
@@ -205,7 +233,7 @@ sequenceDiagram
         API-->>UI: Native image bytes
     end
 
-    CVAT->>API: POST /api/datasets/cvat-webhook/ {event, task}
+    CVAT->>API: POST /api/v1/datasets/cvat-webhook/ {event, task}
     API->>DB: Update linked Dataset state
 ```
 
@@ -226,14 +254,14 @@ stateDiagram-v2
 
     note right of in_progress
         Annotator draws shapes
-        GET/PATCH /api/jobs/{id}/annotations/
-        GET/POST /api/jobs/{id}/issues/
+        GET/PATCH /api/v1/jobs/{id}/annotations/
+        GET/POST /api/v1/jobs/{id}/issues/
     end note
 
     note right of review
         Reviewer inspects
-        POST /api/reviews/ {annotation, status}
-        POST /api/reviews/{id}/approve|reject|request_revision/
+        POST /api/v1/reviews/ {annotation, status}
+        POST /api/v1/reviews/{id}/approve|reject|request_revision/
     end note
 ```
 
@@ -285,7 +313,7 @@ flowchart TD
     API -->|"start/stop/infer"| MR
 
     P7 --> API --> D1
-    Stripe -->|"subscription events\n/api/webhooks/stripe/"| API
+    Stripe -->|"subscription events\n/api/v1/webhooks/stripe/"| API
     API -->|"outbound webhook\nX-Visiox-Signature"| User
 
     P8 --> API --> D1
@@ -349,34 +377,39 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph Triggers["Trigger Events"]
-        T1["Dataset created"]
-        T2["Training job started\nPOST /training-jobs/{id}/start/"]
+        T1["Dataset import queued"]
+        T2["Training job status set to queued"]
+        T6["Augmentation or label cache requested"]
         T3["Periodic (django-celery-beat)"]
         T4["Manual trigger\nPOST /endpoints/{id}/trigger_drift_check/"]
         T5["Outbound webhook event\n(training.completed, drift.created, etc.)"]
     end
 
     subgraph Workers["Celery Workers"]
-        W1["provision_cvat_task(dataset_id)\nmax_retries=3, retry_delay=10s"]
-        W2["run_training_job(job_id)\nepoch loop → RunMetric rows\nTrainingJob status: queued→running→completed|failed"]
+        W1["dataset-worker on .20\nprocess_dataset_import_task\nqueue: datasets"]
+        W2["general-worker on .9\nrun_training_job\nqueue: celery"]
+        W5["general-worker on .9\naugmentation + label cache\nqueue: celery"]
         W3["check_endpoint_drift(endpoint_id)\n60-min window analysis\n→ DriftAlert if conf < threshold"]
         W4["deliver_webhook(webhook_id, event, payload)\nPOST to URL\nX-Visiox-Signature: HMAC-SHA256"]
     end
 
     subgraph State["State Updates"]
         DB[("PostgreSQL")]
-        CVAT["CVAT API"]
+        MinIO["MinIO"]
     end
 
     T1 --> W1
     T2 --> W2
+    T6 --> W5
     T3 --> W3
     T4 --> W3
     T5 --> W4
 
-    W1 --> CVAT
     W1 --> DB
+    W1 --> MinIO
     W2 --> DB
+    W5 --> DB
+    W5 --> MinIO
     W3 --> DB
     W4 -->|HTTP POST| ExternalURL["External webhook URL"]
 ```
@@ -387,36 +420,36 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    Root["/api/"]
+    Root["/api/v1/"]
 
-    Root --> AuthR["/api/auth/\nlogin · register · logout · me · oauth · token/refresh"]
-    Root --> TeamsR["/api/teams/ · /api/invitations/\nCRUD + members + email invitations"]
-    Root --> ProjectsR["/api/projects/\nCRUD"]
-    Root --> DatasetsR["/api/datasets/"]
-    Root --> AnnR["/api/classes/ · /api/annotations/\n/api/tasks/ · /api/jobs/ · /api/reviews/"]
-    Root --> TrainR["/api/architectures/ · /api/training-jobs/ · /api/experiments/"]
-    Root --> DeployR["/api/registry/ · /api/endpoints/\n/api/monitoring/ · /api/drift-alerts/"]
-    Root --> BillingR["/api/plans/ · /api/subscriptions/ · /api/usage/\n/api/api-keys/ · /api/webhooks/"]
-    Root --> DataverseR["/api/dataverse/"]
+    Root --> AuthR["/api/v1/auth/\nlogin · register · logout · me · oauth · token/refresh"]
+    Root --> TeamsR["/api/v1/teams/ · /api/v1/invitations/\nCRUD + members + email invitations"]
+    Root --> ProjectsR["/api/v1/projects/\nCRUD"]
+    Root --> DatasetsR["/api/v1/datasets/"]
+    Root --> AnnR["/api/v1/classes/ · /api/v1/annotations/\n/api/v1/tasks/ · /api/v1/jobs/ · /api/v1/reviews/"]
+    Root --> TrainR["/api/v1/architectures/ · /api/v1/training-jobs/ · /api/v1/experiments/"]
+    Root --> DeployR["/api/v1/registry/ · /api/v1/endpoints/\n/api/v1/monitoring/ · /api/v1/drift-alerts/"]
+    Root --> BillingR["/api/v1/plans/ · /api/v1/subscriptions/ · /api/v1/usage/\n/api/v1/api-keys/ · /api/v1/webhooks/"]
+    Root --> DataverseR["/api/v1/dataverse/"]
     Root --> DocsR["/api/schema/ · /api/docs/ · /api/redoc/"]
 
-    DatasetsR --> DS1["/api/datasets/{id}/annotate_url/"]
-    DatasetsR --> DS2["/api/datasets/{id}/browser/"]
-    DatasetsR --> DS3["/api/datasets/{id}/frames/{n}/\n(AllowAny, ?token= support)"]
-    DatasetsR --> DS4["/api/datasets/{id}/upload/ · /upload_batch/"]
-    DatasetsR --> DS5["/api/datasets/{id}/delete_media/"]
-    DatasetsR --> DS6["/api/datasets/{id}/stats/ · /sync_cvat/ · /export/"]
-    DatasetsR --> DS7["/api/datasets/cvat-webhook/\n(AllowAny)"]
+    DatasetsR --> DS1["/api/v1/datasets/{id}/annotate_url/"]
+    DatasetsR --> DS2["/api/v1/datasets/{id}/browser/"]
+    DatasetsR --> DS3["/api/v1/datasets/{id}/frames/{n}/\n(JWT header or ?token=)"]
+    DatasetsR --> DS4["/api/v1/datasets/{id}/upload/ · /upload_batch/"]
+    DatasetsR --> DS5["/api/v1/datasets/{id}/delete_media/"]
+    DatasetsR --> DS6["/api/v1/datasets/{id}/stats/ · /sync_cvat/ · /export/"]
+    DatasetsR --> DS7["/api/v1/datasets/cvat-webhook/\n(AllowAny)"]
 
-    AnnR --> AN1["/api/media/{id}/annotations/\n(GET · PUT — full snapshot)"]
-    AnnR --> AN2["/api/media/{id}/label-profile/"]
-    AnnR --> AN3["/api/jobs/{id}/annotations/\n(GET · PATCH)"]
-    AnnR --> AN4["/api/jobs/{id}/issues/"]
-    AnnR --> AN5["/api/jobs/{id}/start|complete\n|submit_for_review|approve|reject/"]
-    AnnR --> AN6["/api/datasets/{id}/quality/\n/api/media/{id}/quality/"]
+    AnnR --> AN1["/api/v1/media/{id}/annotations/\n(GET · PUT — full snapshot)"]
+    AnnR --> AN2["/api/v1/media/{id}/label-profile/"]
+    AnnR --> AN3["/api/v1/jobs/{id}/annotations/\n(GET · PATCH)"]
+    AnnR --> AN4["/api/v1/jobs/{id}/issues/"]
+    AnnR --> AN5["/api/v1/jobs/{id}/start|complete\n|submit_for_review|approve|reject/"]
+    AnnR --> AN6["/api/v1/datasets/{id}/quality/\n/api/v1/media/{id}/quality/"]
 
-    BillingR --> B1["/api/webhooks/stripe/\n(AllowAny)"]
-    DataverseR --> DV1["/api/dataverse/share-project/\n/api/dataverse/{id}/fork/"]
+    BillingR --> B1["/api/v1/webhooks/stripe/\n(AllowAny)"]
+    DataverseR --> DV1["/api/v1/dataverse/share-project/\n/api/v1/dataverse/{id}/fork/"]
 ```
 
 ---
@@ -431,14 +464,14 @@ sequenceDiagram
     participant Stripe as Stripe API
     participant Celery as Celery
 
-    User->>API: POST /api/subscriptions/ {team, plan}
+    User->>API: POST /api/v1/subscriptions/ {team, plan}
     API->>Stripe: Create customer + subscription
     Stripe-->>API: {stripe_customer_id, stripe_subscription_id}
     API->>DB: Save Subscription (status: active)
     API-->>User: Subscription object
 
     Note over Stripe,API: Stripe sends events to webhook
-    Stripe->>API: POST /api/webhooks/stripe/ (Stripe-Signature header)
+    Stripe->>API: POST /api/v1/webhooks/stripe/ (Stripe-Signature header)
     API->>API: Validate HMAC signature (STRIPE_WEBHOOK_SECRET)
     API->>DB: Update Subscription status (past_due / cancelled / etc.)
 
@@ -449,7 +482,7 @@ sequenceDiagram
     Celery->>ExternalURL["External URL"]: POST payload\nX-Visiox-Signature: HMAC-SHA256(secret, payload)
 
     Note over User,DB: API Key creation
-    User->>API: POST /api/api-keys/ {name, team, expires_at?}
+    User->>API: POST /api/v1/api-keys/ {name, team, expires_at?}
     API->>DB: Store SHA256(key), prefix
     API-->>User: {key: "vx_sk_...", prefix} ← raw key shown ONCE
 
@@ -471,17 +504,17 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant Media as Media storage
 
-    User->>API: POST /api/dataverse/share-project/ {project, title, tags, license}
+    User->>API: POST /api/v1/dataverse/share-project/ {project, title, tags, license}
     API->>DB: Validate user owns project
     API->>DB: Create DataverseProject (is_public=true)
     API-->>User: DataverseProject object
 
-    User->>API: GET /api/dataverse/?search=traffic
+    User->>API: GET /api/v1/dataverse/?search=traffic
     API->>DB: Query public DataverseProjects
     API->>DB: Increment view_count on detail retrieve
     API-->>User: Paginated list
 
-    User->>API: POST /api/dataverse/{id}/fork/ {team, name?}
+    User->>API: POST /api/v1/dataverse/{id}/fork/ {team, name?}
     API->>DB: Validate user has team membership
     API->>DB: Deep copy Project → new Project
     API->>DB: Copy all Class records
@@ -513,18 +546,18 @@ flowchart LR
     subgraph MinIO["MinIO  (10.29.30.20:9000)"]
         M1[("visiox-media\npermanent\ndataset images")]
         M2[("visiox-artifacts\npermanent\ntrained model weights")]
-        M3[("visiox-tmp\n7-day lifecycle\nephemeral uploads")]
+        M3[("visiox-tmp\nreserved\nlifecycle must be configured")]
     end
 
     Upload -->|"USE_MINIO=True"| Storage --> M1
     ArtifactUpload --> ArtifactStorage --> M2
 
     subgraph Path["Object path  (visiox-media)"]
-        P["orgs/{id}_{slug}/\n  projects/{id}_{slug}/\n    datasets/{id}_{slug}/\n      v{version}/\n        raw|augmented/\n          {filename}\n          thumbs/{filename}"]
+        P["users/{owner_id}_{slug}/\n  projects/{id}_{slug}/\n    datasets/{id}_{slug}/\n      v{version}/\n        raw|augmented/\n          {filename}\n          thumbs/{stem}.jpg"]
     end
 
     subgraph Path2["Object path  (visiox-artifacts)"]
-        P2["training-jobs/{job_id}/\n  weights/{filename}"]
+        P2["training-jobs/{job_id}/\n  artifacts/{filename}\n  weights/{filename}"]
     end
 
     M1 -.->|example| P
@@ -537,8 +570,8 @@ flowchart LR
 | --- | --- | --- |
 | `USE_MINIO` | `True` | Enable MinIO storage backend |
 | `MINIO_ENDPOINT` | `http://10.29.30.20:9000` | MinIO server URL |
-| `MINIO_ACCESS_KEY` | `admin` | Access key (MinIO root user or service account) |
-| `MINIO_SECRET_KEY` | `StrongPassword123` | Secret key |
+| `MINIO_ACCESS_KEY` | `<service-account>` | Scoped MinIO service account |
+| `MINIO_SECRET_KEY` | `<service-account-secret>` | Secret; never commit or document the real value |
 | `MINIO_BUCKET` | `visiox-media` | Default bucket for media uploads |
 
 **Management commands for data migration:**
@@ -562,8 +595,8 @@ flowchart LR
 ## Notes
 
 - PostgreSQL stores all transactional state. Redis is the Celery broker and result backend. Media is local by default; set `USE_MINIO=True` in `.env` to route all uploads to MinIO (`MINIO_ENDPOINT`).
-- Three MinIO buckets: `visiox-media` (dataset images — permanent), `visiox-artifacts` (trained model weights — permanent), `visiox-tmp` (ephemeral uploads — 7-day lifecycle policy). Storage paths use the pattern `orgs/{id}_{slug}/projects/{id}_{slug}/datasets/{id}_{slug}/v{version}/{category}/{filename}`.
-- The Docker Compose stack runs `db`, `redis`, `api`, `worker`, and `beat`. CVAT runs separately and is reached via `CVAT_INTERNAL_HOST`.
+- MinIO buckets: `visiox-media` stores media/import staging/derived labels; `visiox-artifacts` stores trained model artifacts; `visiox-tmp` is reserved until a verified lifecycle is configured. Media paths use `users/{owner_id}_{slug}/projects/{id}_{slug}/datasets/{id}_{slug}/v{version}/{category}/{filename}`.
+- Compose is split by host: `.9` runs `api`, `worker`, and `beat`; `.20` project `infiniq` runs `db`, `redis`, `minio`, and `worker-datasets`. CVAT runs separately and is reached via `CVAT_INTERNAL_HOST`.
 - CVAT integration is concentrated in `datasets/services/cvat.py`. All provisioning, frame proxying, browser payload assembly, one-time data upload, deleted-frame sync, orphan repair, and webhook registration live there.
 - `VISIOX_STANDALONE=true` disables all CVAT calls and falls back to `datasets/standalone.py` for browser data and frame delivery.
 - The outbound webhook system (`billing/`) fires events like `training.job.completed` and `deployment.drift_alert.created` via Celery, signed with HMAC-SHA256.

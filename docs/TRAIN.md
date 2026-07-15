@@ -186,6 +186,29 @@ Later phases may add `best.onnx`, RT-DETR, Faster R-CNN, DETR, TensorRT export, 
 
 ## Architecture
 
+### Deployed worker topology
+
+Training orchestration tasks currently use the default `celery` queue and run
+on the non-root `general-worker` on `.9` (concurrency `2`, prefetch `1`). The
+separate non-root `dataset-worker` on `.20` listens only to `datasets` and does
+not consume training orchestration. The GPU host exposes the training agent and
+its GPU worker listens only to `gpu_training`.
+
+PostgreSQL, Redis and MinIO run on `.20`. The general worker reaches them over
+the LAN; the dataset worker uses Compose DNS (`db`, `redis`, `minio`). The
+infrastructure Compose project is `infiniq`.
+
+`TRAINING_CALLBACK_BASE_URL` must point to the API on `.9`, not the
+infrastructure host:
+
+```env
+TRAINING_CALLBACK_BASE_URL=http://10.29.30.9:8000
+```
+
+Celery node suffixes change after container recreation. Operational checks
+should use `inspect` without a hardcoded `--destination` unless the current node
+name was discovered immediately beforehand.
+
 ```mermaid
 flowchart LR
     UI["Next.js Train UI"] -->|"POST /api/v1/training-jobs/"| API["Django API"]

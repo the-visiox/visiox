@@ -1,6 +1,7 @@
 # Infrastructure services — run once on the shared server (10.29.30.20)
 #
-#   docker compose -f docker-compose.infra.yml up -d
+# Existing deployment uses Compose project "infiniq":
+#   docker compose -p infiniq -f docker-compose.infra.yml up -d
 #
 # Exposes:
 #   PostgreSQL  — 10.29.30.20:5432

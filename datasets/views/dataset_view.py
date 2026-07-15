@@ -516,6 +516,73 @@ def _clamp_float(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _yolo_class_index_offset(class_ids: set[int], class_count: int) -> int:
+    """Return 0 for standard YOLO ids or 1 for an unambiguous 1-based export."""
+    if not class_ids:
+        return 0
+    if all(0 <= class_id < class_count for class_id in class_ids):
+        return 0
+    if (
+        0 not in class_ids
+        and class_count in class_ids
+        and all(1 <= class_id <= class_count for class_id in class_ids)
+    ):
+        return 1
+    observed = ', '.join(str(class_id) for class_id in sorted(class_ids)[:10])
+    raise ValueError(
+        f'YOLO label class ids must be 0..{class_count - 1}. '
+        f'Observed: {observed or "none"}.'
+    )
+
+
+def _read_yolo_label_rows(
+    archive: zipfile.ZipFile,
+    members: set[str],
+    image_keys: list[str],
+    class_count: int,
+) -> tuple[dict[str, list[tuple[int, float, float, float, float]]], int]:
+    rows_by_image: dict[str, list[tuple[int, float, float, float, float]]] = {}
+    class_ids: set[int] = set()
+    for image_key in image_keys:
+        label_key = _yolo_label_key(image_key)
+        rows = []
+        if label_key and label_key in members:
+            label_text = archive.read(label_key).decode('utf-8', errors='ignore')
+            for line in label_text.splitlines():
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                if len(parts) < 5:
+                    raise ValueError(f'Invalid YOLO label row in {label_key}: {line.strip()}')
+                try:
+                    class_idx = int(float(parts[0]))
+                    cx, cy, bw, bh = [float(value) for value in parts[1:5]]
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f'Invalid YOLO label row in {label_key}: {line.strip()}') from exc
+                class_ids.add(class_idx)
+                rows.append((class_idx, cx, cy, bw, bh))
+        rows_by_image[image_key] = rows
+
+    offset = _yolo_class_index_offset(class_ids, class_count)
+    if offset:
+        rows_by_image = {
+            image_key: [
+                (class_idx - offset, cx, cy, bw, bh)
+                for class_idx, cx, cy, bw, bh in rows
+            ]
+            for image_key, rows in rows_by_image.items()
+        }
+    return rows_by_image, offset
+
+
+def _duplicate_names_error(names: set[str]) -> str:
+    ordered = sorted(names)
+    preview = ', '.join(ordered[:10])
+    remaining = len(ordered) - min(len(ordered), 10)
+    suffix = f' and {remaining} more' if remaining else ''
+    return f'One or more image names already exist in this dataset: {preview}{suffix}.'
+
+
 def _delete_staged_files(staged_files: list[dict]) -> None:
     for item in staged_files:
         key = item.get('key')
@@ -609,6 +676,7 @@ def _queue_dataset_import_job(
     import_format: str,
     *,
     forced_media_type: str | None = None,
+    replace_existing: bool = False,
 ) -> Response:
     job = DatasetImportJob.objects.create(
         dataset=dataset,
@@ -616,6 +684,7 @@ def _queue_dataset_import_job(
         status='queued',
         total=len(files),
         done=0,
+        summary={'replace_existing': replace_existing},
         created_by=request.user,
     )
 
@@ -781,9 +850,20 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
         filenames = [posixpath.basename(name) for name in image_keys]
         if len(filenames) != len(set(filenames)):
             raise ValueError('Image file names inside the ZIP must be unique.')
-        clashes = _existing_media_names_in_dataset(dataset, filenames)
-        if clashes:
-            raise ValueError(f'One or more image names already exist in this dataset: {", ".join(sorted(clashes))}')
+        label_rows_by_image, class_index_offset = _read_yolo_label_rows(
+            archive,
+            set(members),
+            image_keys,
+            len(class_names),
+        )
+        replace_existing = bool(job and (job.summary or {}).get('replace_existing'))
+        existing_media_by_name = {
+            media.original_filename: media
+            for media in dataset.media_files.filter(original_filename__in=filenames)
+        }
+        clashes = set(existing_media_by_name)
+        if clashes and not replace_existing:
+            raise ValueError(_duplicate_names_error(clashes))
 
         split_counts = {'train': 0, 'val': 0, 'test': 0}
         class_split_counts = {
@@ -797,17 +877,21 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
                 classes.append(class_obj)
 
             dataset.project.owner
-            created_media = []
+            if existing_media_by_name:
+                Annotation.objects.filter(media__in=existing_media_by_name.values()).delete()
+
+            processed_media = []
+            created_count = 0
+            reused_count = 0
             annotations = []
             batch_size = _dataset_import_batch_size()
             for image_batch in _chunked(image_keys, batch_size):
                 prepared_media = []
                 storage_entries = []
+                new_media_batch = []
+                existing_media_batch = []
                 for image_key in image_batch:
                     image_name = posixpath.basename(image_key)
-                    image_content = ContentFile(archive.read(image_key), name=image_name)
-                    width, height = _extract_image_dimensions(image_content)
-                    image_content.seek(0)
                     split = image_split_map[image_key]
                     metadata = {
                         'import_format': 'yolo26',
@@ -820,44 +904,54 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
                         if metadata['split'] in split_counts:
                             split_counts[metadata['split']] += 1
 
-                    media = Media(
-                        dataset=dataset,
-                        type='image',
-                        original_filename=image_name,
-                        width=width,
-                        height=height,
-                        file_size=image_content.size,
-                        metadata=metadata,
-                    )
+                    media = existing_media_by_name.get(image_name)
+                    if media:
+                        width, height = media.width, media.height
+                        if not width or not height:
+                            image_content = ContentFile(archive.read(image_key), name=image_name)
+                            width, height = _extract_image_dimensions(image_content)
+                            media.width = width
+                            media.height = height
+                        merged_metadata = dict(media.metadata or {})
+                        merged_metadata.update(metadata)
+                        media.metadata = merged_metadata
+                        metadata = merged_metadata
+                        existing_media_batch.append(media)
+                        reused_count += 1
+                    else:
+                        image_content = ContentFile(archive.read(image_key), name=image_name)
+                        width, height = _extract_image_dimensions(image_content)
+                        image_content.seek(0)
+                        media = Media(
+                            dataset=dataset,
+                            type='image',
+                            original_filename=image_name,
+                            width=width,
+                            height=height,
+                            file_size=image_content.size,
+                            metadata=metadata,
+                        )
+                        new_media_batch.append(media)
+                        storage_entries.append((media, image_name, image_content))
+                        created_count += 1
                     prepared_media.append((image_key, media, width, height, metadata))
-                    storage_entries.append((media, image_name, image_content))
 
-                _save_media_batch(storage_entries)
-                media_batch = [item[1] for item in prepared_media]
-                try:
-                    Media.objects.bulk_create(media_batch)
-                except Exception:
-                    _delete_unsaved_media_files(media_batch)
-                    raise
+                if storage_entries:
+                    _save_media_batch(storage_entries)
+                    try:
+                        Media.objects.bulk_create(new_media_batch)
+                    except Exception:
+                        _delete_unsaved_media_files(new_media_batch)
+                        raise
+                if existing_media_batch:
+                    Media.objects.bulk_update(existing_media_batch, ['width', 'height', 'metadata'])
 
                 for image_key, media, width, height, metadata in prepared_media:
-                    created_media.append(media)
-                    label_key = _yolo_label_key(image_key)
-                    if not label_key or label_key not in members or not width or not height:
+                    processed_media.append(media)
+                    if not width or not height:
                         continue
-                    label_text = archive.read(label_key).decode('utf-8', errors='ignore')
                     media_class_splits = set()
-                    for line in label_text.splitlines():
-                        parts = line.strip().split()
-                        if len(parts) < 5:
-                            continue
-                        try:
-                            class_idx = int(float(parts[0]))
-                            cx, cy, bw, bh = [float(value) for value in parts[1:5]]
-                        except (TypeError, ValueError):
-                            continue
-                        if class_idx < 0 or class_idx >= len(classes):
-                            continue
+                    for class_idx, cx, cy, bw, bh in label_rows_by_image.get(image_key, []):
                         media_split = metadata.get('split')
                         if media_split in ('train', 'val', 'test'):
                             media_class_splits.add((class_names[class_idx], media_split))
@@ -892,7 +986,7 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
                         class_split_counts[class_name][media_split] += 1
 
                 if job:
-                    job.done = len(created_media)
+                    job.done = len(processed_media)
                     job.save(update_fields=['done', 'updated_at'])
 
             if annotations:
@@ -901,7 +995,7 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
             from django.utils import timezone
 
             now = timezone.now()
-            total_images = sum(split_counts.values()) or len(created_media)
+            total_images = sum(split_counts.values()) or len(processed_media)
             dataset.verification_status = 'verified'
             dataset.verified_by = user
             dataset.verified_at = now
@@ -941,10 +1035,13 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
 
         return {
             'format': 'yolo26',
-            'images': len(created_media),
+            'images': len(processed_media),
+            'created_images': created_count,
+            'reused_images': reused_count,
             'annotations': len(annotations),
             'classes': len(class_names),
             'splits': split_counts,
+            'class_index_base': 1 if class_index_offset else 0,
         }
 
 
@@ -1240,6 +1337,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
     def start_import(self, request, pk=None):
         dataset = self.get_object()
         import_format = request.data.get('format', 'images')
+        replace_existing = str(request.data.get('replace_existing', '')).strip().lower() in ('1', 'true', 'yes', 'on')
         files = request.FILES.getlist('files') or ([request.FILES['file']] if 'file' in request.FILES else [])
         try:
             _validate_dataset_import_files(dataset, import_format, files, max_files=500)
@@ -1248,7 +1346,13 @@ class DatasetViewSet(viewsets.ModelViewSet):
             status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
             return Response({'detail': detail}, status=status_code)
 
-        return _queue_dataset_import_job(request, dataset, files, import_format)
+        return _queue_dataset_import_job(
+            request,
+            dataset,
+            files,
+            import_format,
+            replace_existing=replace_existing and import_format == 'yolo26',
+        )
 
     @action(
         detail=True,
@@ -1260,6 +1364,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
         dataset = self.get_object()
         archive_file = request.FILES.get('file')
         import_format = request.data.get('format')
+        replace_existing = str(request.data.get('replace_existing', '')).strip().lower() in ('1', 'true', 'yes', 'on')
         files = [archive_file] if archive_file is not None else []
         try:
             _validate_dataset_import_files(dataset, import_format, files, max_files=1)
@@ -1268,7 +1373,13 @@ class DatasetViewSet(viewsets.ModelViewSet):
             status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
             return Response({'detail': detail}, status=status_code)
 
-        return _queue_dataset_import_job(request, dataset, files, import_format)
+        return _queue_dataset_import_job(
+            request,
+            dataset,
+            files,
+            import_format,
+            replace_existing=replace_existing and import_format == 'yolo26',
+        )
 
     @action(detail=True, methods=['post'], url_path='versions')
     def new_version(self, request, pk=None):

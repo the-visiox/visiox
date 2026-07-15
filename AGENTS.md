@@ -10,7 +10,7 @@ Pairs with **visiox-ui** (Next.js) and the optional **cvat** fork in sibling rep
 | Topic | Detail |
 |---|---|
 | Dev server | `python manage.py runserver 0.0.0.0:8000` |
-| API base URL | `http://localhost:8000/api/` |
+| API base URL | `http://localhost:8000/api/v1/` |
 | Swagger UI | `http://localhost:8000/api/docs/` |
 | ReDoc | `http://localhost:8000/api/redoc/` |
 | OpenAPI schema | `http://localhost:8000/api/schema/` |
@@ -34,47 +34,45 @@ cvat/               ← Customized CVAT fork (annotation engine, optional)
 
 ## Runtime
 
-### Start (3-terminal dev setup)
+### Current deployment topology
 
-**Terminal A — Database + Redis:**
-```bash
-# inside visiox/
-docker compose up -d db redis
-```
+| Host | Services |
+|---|---|
+| `10.29.30.9` | Django API, Celery beat, non-root `general-worker` on queue `celery` |
+| `10.29.30.20` | PostgreSQL, Redis, MinIO, non-root `dataset-worker` on queue `datasets` |
+| GPU host | Training/inference agents and worker on queue `gpu_training` |
 
-**Terminal B — Django API:**
+The `.20` infrastructure stack uses Compose project `infiniq`; management
+commands must include `-p infiniq` unless the compose file declares
+`name: infiniq`. Worker node suffixes are container IDs and change after
+recreation, so do not hardcode them.
+
+### Local API
+
 ```bash
 python manage.py migrate
 python manage.py setup_groups
-python manage.py seed_demo_data
 python manage.py runserver 0.0.0.0:8000
 ```
 
-**Terminal C — Celery workers (optional):**
+### Application services on `.9`
+
 ```bash
-celery -A visiox worker -l info
-celery -A visiox beat -l info
+docker compose config --quiet
+docker compose up -d --build
 ```
 
-### Full Docker stack
+### Infrastructure and dataset worker on `.20`
+
 ```bash
-docker compose up --build -d
-# then:
-docker compose exec api python manage.py migrate
-docker compose exec api python manage.py setup_groups
-docker compose exec api python manage.py seed_demo_data
+docker compose -p infiniq -f docker-compose.infra.yml ps
+docker compose -p infiniq -f docker-compose.infra.yml logs -f worker-datasets
 ```
 
-### Docker services
-| Service | Port | Description |
-|---|---|---|
-| `db` | 5433 (host) / 5432 (internal) | PostgreSQL 16 |
-| `redis` | 6379 | Redis 7 (Celery broker + results) |
-| `api` | 8000 | Django API |
-| `worker` | — | Celery worker |
-| `beat` | — | Celery beat scheduler |
-
-> **Host vs Docker DB:** When running `manage.py` on the host (not inside a container), use `DATABASE_HOST=localhost` and `DATABASE_PORT=5433`. Inside containers, use `DATABASE_HOST=db` and `DATABASE_PORT=5432`.
+`docker-compose.yml` contains `api`, `worker` and `beat` for `.9`.
+`docker-compose.infra.yml` contains `db`, `redis`, `minio` and
+`worker-datasets` for `.20`. Both workers use `Dockerfile.worker` and run as
+`uid=10001(visiox)`.
 
 ---
 
@@ -100,35 +98,40 @@ docker compose exec api python manage.py seed_demo_data
 ### JWT Authentication
 - `djangorestframework-simplejwt` — access token (1h) + refresh token (7d)
 - Auto-rotate refresh tokens; old refresh tokens are blacklisted on rotation
-- Frame image endpoints (`/api/datasets/{id}/frames/{n}/`) dùng `AllowAny` — không cần auth
+- Frame image endpoints (`/api/v1/datasets/{id}/frames/{n}/`) use the configured frame authentication behavior.
 - `core/jwt_query_auth.py` định nghĩa `JWTAuthQueryOrHeader` (subclass hỗ trợ `?token=`) nhưng hiện **chưa được đăng ký** vào `DEFAULT_AUTHENTICATION_CLASSES`
 
 ### API Key Authentication
 - Header: `X-API-KEY: <plain key>`
 - Backed by `billing/backends.py` — validates SHA256 hash, updates `last_used`
-- Create via `POST /api/api-keys/` — raw key shown **once only**
+- Create via `POST /api/v1/api-keys/` — raw key shown **once only**
 
 ### CVAT (optional)
 - Enabled by default; disabled with `VISIOX_STANDALONE=true`
 - All integration in `datasets/services/cvat.py`
-- CVAT webhook receiver at `POST /api/datasets/cvat-webhook/` (AllowAny)
-- SSO-style annotation URL via `GET /api/datasets/{id}/annotate_url/`
+- CVAT webhook receiver at `POST /api/v1/datasets/cvat-webhook/`
+- SSO-style annotation URL via `GET /api/v1/datasets/{id}/annotate_url/`
 
 ### Celery Background Tasks
 | Task | App | Trigger |
 |---|---|---|
-| `provision_cvat_task` | datasets | Dataset created |
-| `run_training_job` | training | Job started |
+| `process_dataset_import_task` | datasets | Import job explicitly queued on `datasets` |
+| `augment_dataset_task` | datasets | Augmentation queued on default `celery` |
+| Dataset label-cache tasks | datasets | Refresh/clear queued on default `celery` |
+| `run_training_job` | training | Training orchestration on default `celery` |
 | `check_endpoint_drift` | deployments | Periodic / manual trigger |
 | `deliver_webhook` | deployments | Event fired |
 
 ### Stripe
-- Webhook at `POST /api/webhooks/stripe/` (AllowAny, validates `Stripe-Signature`)
+- Webhook at `POST /api/v1/webhooks/stripe/` (validates `Stripe-Signature`)
 - Keys: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
 
 ### Storage
-- **Default:** local filesystem — `MEDIA_ROOT = BASE_DIR / 'media'`
-- **S3:** enable with `USE_S3=true` + AWS env vars
+- **Development default:** local filesystem (`MEDIA_ROOT`)
+- **Shared deployment:** MinIO with `USE_MINIO=True`
+- `visiox-media` stores media, thumbnails, import staging and label snapshots.
+- `visiox-artifacts` stores model and training artifacts.
+- PostgreSQL remains authoritative for annotations and split state.
 
 ---
 
@@ -140,11 +143,11 @@ docker compose exec api python manage.py seed_demo_data
 | `SECRET_KEY` | — | Django secret key |
 | `DATABASE_NAME` | `visiox_db` | PostgreSQL DB name |
 | `DATABASE_USER` | `postgres` | PostgreSQL user |
-| `DATABASE_PASSWORD` | `postgres` | PostgreSQL password |
-| `DATABASE_HOST` | `localhost` | PostgreSQL host |
-| `DATABASE_PORT` | `5433` | PostgreSQL port (5433 Docker, 5432 native) |
-| `CELERY_BROKER_URL` | `redis://127.0.0.1:6379/0` | Redis broker |
-| `CELERY_RESULT_BACKEND` | `redis://127.0.0.1:6379/0` | Redis results |
+| `DATABASE_PASSWORD` | — | PostgreSQL password; never commit it |
+| `DATABASE_HOST` | `10.29.30.20` in current deployment | PostgreSQL host |
+| `DATABASE_PORT` | `5432` | PostgreSQL port |
+| `CELERY_BROKER_URL` | `redis://10.29.30.20:6379/0` | Redis broker from `.9` |
+| `CELERY_RESULT_BACKEND` | `redis://10.29.30.20:6379/0` | Redis results from `.9` |
 
 ### Optional — App Behavior
 | Variable | Default | Description |
@@ -162,7 +165,7 @@ docker compose exec api python manage.py seed_demo_data
 | `CVAT_PUBLIC_URL` | CVAT public-facing URL |
 | `CVAT_USERNAME` | CVAT admin username |
 | `CVAT_PASSWORD` | CVAT admin password |
-| `CVAT_WEBHOOK_URL` | URL CVAT posts webhook events to (default `http://host.docker.internal:8000/api/datasets/cvat-webhook/`) |
+| `CVAT_WEBHOOK_URL` | URL CVAT posts webhook events to (under `/api/v1/datasets/`) |
 
 ### Optional — OAuth
 | Variable | Description |
@@ -172,14 +175,15 @@ docker compose exec api python manage.py seed_demo_data
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub OAuth client ID |
 | `GITHUB_OAUTH_CLIENT_SECRET` | GitHub OAuth client secret |
 
-### Optional — Storage
+### Optional — Storage and dataset import
 | Variable | Description |
 |---|---|
-| `USE_S3` | `true` to use S3 instead of local filesystem |
-| `AWS_ACCESS_KEY_ID` | AWS access key |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
-| `AWS_STORAGE_BUCKET_NAME` | S3 bucket name |
-| `AWS_S3_REGION_NAME` | S3 region (default `us-east-1`) |
+| `USE_MINIO` | `True` to use MinIO instead of local filesystem |
+| `MINIO_ENDPOINT` | LAN endpoint on `.9`; `http://minio:9000` inside `.20` Compose |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | Scoped service-account credentials |
+| `MINIO_BUCKET` | Default media bucket (`visiox-media`) |
+| `DATASET_IMPORT_STORAGE_WORKERS` | Bounded object-storage I/O threads (deployed: `6`) |
+| `DATASET_IMPORT_BATCH_SIZE` | ORM/progress batch size (deployed: `24`) |
 
 ### Optional — Stripe
 | Variable | Description |
@@ -203,8 +207,8 @@ docker compose exec api python manage.py seed_demo_data
 
 ```
 visiox/                         # Django settings package
-├── settings.py                 # All configuration (DB, JWT, Celery, CORS, CVAT, S3, Stripe)
-├── urls.py                     # Root URL conf — mounts all app routers under /api/
+├── settings.py                 # DB, JWT, Celery, CORS, CVAT, MinIO, Stripe
+├── urls.py                     # App routers under /api/v1/; docs under /api/v1/
 ├── celery.py                   # Celery app init
 ├── wsgi.py / asgi.py
 
@@ -290,9 +294,13 @@ python manage.py showmigrations datasets
 python manage.py setup_groups
 python manage.py seed_demo_data
 
-# Celery
-celery -A visiox worker -l info
+# Celery: mirror the deployed queue split
+celery -A visiox worker -l info -Q celery --concurrency=2 --prefetch-multiplier=1 --hostname=general-worker@%h
 celery -A visiox beat -l info
+
+# Dataset worker on .20 (Compose project infiniq)
+docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets \
+  celery -A visiox inspect active_queues
 
 # CVAT sync
 python scripts/pull_missing_tasks.py
@@ -314,15 +322,15 @@ python scripts/pull_missing_tasks.py
 
 | Domain | Endpoint prefix | ~Endpoints |
 |---|---|---|
-| Auth | `/api/auth/` | 6 |
-| Teams | `/api/teams/`, `/api/invitations/` | 11 |
-| Projects | `/api/projects/` | 5 |
-| Datasets | `/api/datasets/` | 13 |
-| Annotations | `/api/classes/`, `/api/annotations/`, `/api/tasks/`, `/api/jobs/`, `/api/reviews/` | 20+ |
-| Training | `/api/architectures/`, `/api/training-jobs/`, `/api/experiments/` | 8 |
-| Deployments | `/api/registry/`, `/api/endpoints/`, `/api/monitoring/`, `/api/drift-alerts/` | 10 |
-| Billing | `/api/plans/`, `/api/subscriptions/`, `/api/usage/`, `/api/api-keys/`, `/api/webhooks/` | 10 |
-| Dataverse | `/api/dataverse/` | 4 |
+| Auth | `/api/v1/auth/` | 6 |
+| Teams | `/api/v1/teams/`, `/api/v1/invitations/` | 11 |
+| Projects | `/api/v1/projects/` | 5 |
+| Datasets | `/api/v1/datasets/` | 13 |
+| Annotations | `/api/v1/classes/`, `/api/v1/annotations/`, `/api/v1/tasks/`, `/api/v1/jobs/`, `/api/v1/reviews/` | 20+ |
+| Training | `/api/v1/architectures/`, `/api/v1/training-jobs/`, `/api/v1/experiments/` | 8 |
+| Deployments | `/api/v1/registry/`, `/api/v1/endpoints/`, `/api/v1/monitoring/`, `/api/v1/drift-alerts/` | 10 |
+| Billing | `/api/v1/plans/`, `/api/v1/subscriptions/`, `/api/v1/usage/`, `/api/v1/api-keys/`, `/api/v1/webhooks/` | 10 |
+| Dataverse | `/api/v1/dataverse/` | 4 |
 | Docs | `/api/schema/`, `/api/docs/`, `/api/redoc/` | 3 |
 
 Full reference: [`docs/API.md`](./docs/API.md)  

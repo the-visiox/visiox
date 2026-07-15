@@ -1,5 +1,7 @@
 import threading
 import time
+import zipfile
+from io import BytesIO
 from unittest.mock import Mock
 
 from django.test import SimpleTestCase, override_settings
@@ -7,7 +9,10 @@ from django.test import SimpleTestCase, override_settings
 from datasets.views.dataset_view import (
     _dataset_import_batch_size,
     _dataset_import_storage_workers,
+    _duplicate_names_error,
+    _read_yolo_label_rows,
     _save_media_batch,
+    _yolo_class_index_offset,
 )
 
 
@@ -71,3 +76,37 @@ class DatasetImportStorageTests(SimpleTestCase):
     def test_import_limits_are_sanitized(self):
         self.assertEqual(_dataset_import_storage_workers(), 16)
         self.assertEqual(_dataset_import_batch_size(), 24)
+
+    def test_standard_yolo_class_ids_keep_zero_based_index(self):
+        self.assertEqual(_yolo_class_index_offset({0, 2}, 3), 0)
+
+    def test_unambiguous_one_based_yolo_class_ids_are_normalized(self):
+        self.assertEqual(_yolo_class_index_offset({1, 3}, 3), 1)
+
+    def test_invalid_yolo_class_ids_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, r'0\.\.2'):
+            _yolo_class_index_offset({0, 3}, 3)
+
+    def test_yolo_label_rows_normalize_one_based_class_ids(self):
+        archive_bytes = BytesIO()
+        with zipfile.ZipFile(archive_bytes, 'w') as archive:
+            archive.writestr('train/labels/sample.txt', '3 0.5 0.5 0.2 0.3\n')
+        archive_bytes.seek(0)
+
+        with zipfile.ZipFile(archive_bytes) as archive:
+            rows, offset = _read_yolo_label_rows(
+                archive,
+                set(archive.namelist()),
+                ['train/images/sample.jpg'],
+                3,
+            )
+
+        self.assertEqual(offset, 1)
+        self.assertEqual(rows['train/images/sample.jpg'][0][0], 2)
+
+    def test_duplicate_name_error_is_shortened(self):
+        message = _duplicate_names_error({f'image-{index:02}.jpg' for index in range(20)})
+
+        self.assertIn('image-00.jpg', message)
+        self.assertIn('and 10 more', message)
+        self.assertNotIn('image-19.jpg', message)

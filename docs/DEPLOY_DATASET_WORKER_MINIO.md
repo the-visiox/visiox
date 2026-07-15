@@ -4,6 +4,27 @@ Tài liệu này hướng dẫn chạy Celery worker dành riêng cho queue `dat
 `10.29.30.20`, nơi đang chạy PostgreSQL, Redis và MinIO. Django API và frontend
 tiếp tục chạy trên máy `10.29.30.9`.
 
+## Trạng thái đã xác nhận
+
+Lần triển khai được xác nhận gần nhất dùng source commit
+`38bec9cb3518bf8065cfd8b1ad67eee563be287b`:
+
+- `dataset-worker@...` chạy bằng `uid=10001(visiox)`, queue `datasets`,
+  concurrency `1`, prefetch `1`.
+- `general-worker@...` chạy bằng `uid=10001(visiox)`, queue `celery`,
+  concurrency `2`, prefetch `1`.
+- GPU worker chỉ nghe `gpu_training`.
+- PostgreSQL, Redis và MinIO healthy và không cần restart khi recreate worker.
+- Image worker không chứa `.env*`.
+
+Celery hostname chứa container ID và sẽ đổi sau mỗi lần recreate. Không lưu cố
+định hostname như `dataset-worker@cdee62496736` trong script; dùng `inspect`
+không có `--destination`, hoặc lấy hostname hiện tại từ kết quả `inspect ping`.
+
+Hạ tầng `.20` đang thuộc Compose project `infiniq`. Tất cả lệnh trong tài liệu
+này dùng `-p infiniq`; thiếu tham số này có thể báo
+`service "worker-datasets" is not running` dù container vẫn hoạt động.
+
 ## 1. Kiến trúc mục tiêu
 
 ```text
@@ -65,11 +86,11 @@ cd C:\Users\Admin\project\visiox
 
 git status
 git diff --stat
-git switch -c deploy/minio-worker
+git switch -c <DEPLOY_BRANCH>
 git add -A
 git diff --cached --stat
 git commit -m "Deploy dataset worker near MinIO"
-git push -u origin deploy/minio-worker
+git push -u origin <DEPLOY_BRANCH>
 ```
 
 Không commit `.env`, credentials hoặc token.
@@ -85,25 +106,25 @@ ssh <DEPLOY_USER>@10.29.30.20
 Chuẩn bị thư mục:
 
 ```bash
-sudo mkdir -p /opt/visiox
-sudo chown "$USER":"$USER" /opt/visiox
+sudo mkdir -p ~/project/visiox
+sudo chown "$USER":"$USER" ~/project/visiox
 ```
 
 Clone source:
 
 ```bash
-git clone --branch deploy/minio-worker \
+git clone --branch <DEPLOY_BRANCH> \
   git@github.com:the-visiox/visiox.git \
-  /opt/visiox
+  ~/project/visiox
 ```
 
 Nếu source đã tồn tại:
 
 ```bash
-cd /opt/visiox
+cd ~/project/visiox
 git fetch origin
-git switch deploy/minio-worker
-git pull --ff-only origin deploy/minio-worker
+git switch <DEPLOY_BRANCH>
+git pull --ff-only origin <DEPLOY_BRANCH>
 ```
 
 Xác nhận commit đang chạy:
@@ -118,7 +139,7 @@ Working tree trên server nên sạch trước khi build image.
 
 ## 5. Ngăn credentials bị đóng gói vào Docker image
 
-Tạo `/opt/visiox/.dockerignore` nếu chưa có:
+Tạo `~/project/visiox/.dockerignore` nếu chưa có:
 
 ```text
 .git
@@ -143,10 +164,11 @@ bị ghi vào image layer.
 
 ## 6. Tạo environment riêng cho dataset worker
 
-Tạo `/opt/visiox/.env.worker`:
+Tạo `~/project/visiox/.env.worker` từ file mẫu:
 
 ```bash
-cd /opt/visiox
+cd ~/project/visiox
+cp env.worker.example .env.worker
 nano .env.worker
 ```
 
@@ -179,7 +201,7 @@ DATASET_IMPORT_BATCH_SIZE=24
 Bảo vệ file:
 
 ```bash
-chmod 600 /opt/visiox/.env.worker
+chmod 600 ~/project/visiox/.env.worker
 ```
 
 `SECRET_KEY` nên giống backend `.9`. Database và MinIO credentials phải khớp
@@ -228,10 +250,10 @@ này.
 ## 8. Kiểm tra cấu hình trước khi chạy
 
 ```bash
-cd /opt/visiox
+cd ~/project/visiox
 
-docker compose -f docker-compose.infra.yml config --quiet
-docker compose -f docker-compose.infra.yml config | grep '<'
+docker compose -p infiniq -f docker-compose.infra.yml config --quiet
+docker compose -p infiniq -f docker-compose.infra.yml config | grep '<'
 ```
 
 Lệnh `grep '<'` không được trả về placeholder nào.
@@ -242,7 +264,7 @@ database password, MinIO secret và Django secret.
 Kiểm tra infrastructure:
 
 ```bash
-docker compose -f docker-compose.infra.yml ps
+docker compose -p infiniq -f docker-compose.infra.yml ps
 ```
 
 `db`, `redis` và `minio` phải ở trạng thái `healthy`.
@@ -252,13 +274,13 @@ docker compose -f docker-compose.infra.yml ps
 Build riêng worker:
 
 ```bash
-docker compose -f docker-compose.infra.yml build worker-datasets
+docker compose -p infiniq -f docker-compose.infra.yml build worker-datasets
 ```
 
 Kiểm tra migration:
 
 ```bash
-docker compose -f docker-compose.infra.yml run --rm \
+docker compose -p infiniq -f docker-compose.infra.yml run --rm \
   worker-datasets python manage.py showmigrations datasets
 ```
 
@@ -277,7 +299,7 @@ docker compose exec api python manage.py migrate --noinput
 Hoặc chạy one-off trên `.20`:
 
 ```bash
-docker compose -f docker-compose.infra.yml run --rm \
+docker compose -p infiniq -f docker-compose.infra.yml run --rm \
   worker-datasets python manage.py migrate --noinput
 ```
 
@@ -286,9 +308,10 @@ Chỉ cần chạy migration từ một nơi.
 ## 10. Khởi động dataset worker
 
 ```bash
-docker compose -f docker-compose.infra.yml up -d worker-datasets
-docker compose -f docker-compose.infra.yml ps
-docker compose -f docker-compose.infra.yml logs -f worker-datasets
+docker compose -p infiniq -f docker-compose.infra.yml up -d \
+  --no-deps --force-recreate worker-datasets
+docker compose -p infiniq -f docker-compose.infra.yml ps
+docker compose -p infiniq -f docker-compose.infra.yml logs -f worker-datasets
 ```
 
 Log mong đợi:
@@ -301,7 +324,7 @@ dataset-worker@... ready.
 Xác nhận worker không chạy bằng root:
 
 ```bash
-docker compose -f docker-compose.infra.yml exec worker-datasets id
+docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets id
 ```
 
 Kết quả phải có `uid=10001(visiox)` và không phải `uid=0(root)`.
@@ -311,7 +334,7 @@ Danh sách queue phải có `datasets`.
 Có thể kiểm tra từ container:
 
 ```bash
-docker compose -f docker-compose.infra.yml exec worker-datasets \
+docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets \
   celery -A visiox inspect active_queues
 ```
 
@@ -338,7 +361,7 @@ command: >
 Recreate worker `.9`:
 
 ```bash
-docker compose up -d --force-recreate worker
+docker compose up -d --no-deps --force-recreate worker
 docker compose logs -f worker
 ```
 
@@ -353,7 +376,7 @@ thay vì worker gần MinIO trên `.20`.
 4. Trên `.20`, kiểm tra task xuất hiện trong log:
 
 ```bash
-docker compose -f docker-compose.infra.yml logs -f worker-datasets
+docker compose -p infiniq -f docker-compose.infra.yml logs -f worker-datasets
 ```
 
 5. Kiểm tra MinIO có object trong `visiox-media`.
@@ -365,12 +388,13 @@ docker compose -f docker-compose.infra.yml logs -f worker-datasets
 Trên `.20`:
 
 ```bash
-cd /opt/visiox
+cd ~/project/visiox
 git fetch origin
-git pull --ff-only origin deploy/minio-worker
+git pull --ff-only origin <DEPLOY_BRANCH>
 
-docker compose -f docker-compose.infra.yml \
-  up -d --build --no-deps worker-datasets
+docker compose -p infiniq -f docker-compose.infra.yml build worker-datasets
+docker compose -p infiniq -f docker-compose.infra.yml \
+  up -d --no-deps --force-recreate worker-datasets
 ```
 
 Luôn chạy migration trước khi worker mới nhận task nếu commit có migration mới.
@@ -406,8 +430,8 @@ hạn `16` trong backend.
 Sau khi thay `.env.worker`, recreate worker:
 
 ```bash
-docker compose -f docker-compose.infra.yml \
-  up -d --force-recreate worker-datasets
+docker compose -p infiniq -f docker-compose.infra.yml \
+  up -d --no-deps --force-recreate worker-datasets
 ```
 
 ## 15. Rollback
@@ -415,7 +439,7 @@ docker compose -f docker-compose.infra.yml \
 Để ngừng nhận dataset job trên `.20`:
 
 ```bash
-docker compose -f docker-compose.infra.yml stop worker-datasets
+docker compose -p infiniq -f docker-compose.infra.yml stop worker-datasets
 ```
 
 Sau đó cho worker `.9` nghe lại cả hai queue:
@@ -425,13 +449,13 @@ command: celery -A visiox worker -l info -Q celery,datasets
 ```
 
 ```bash
-docker compose up -d --force-recreate worker
+docker compose up -d --no-deps --force-recreate worker
 ```
 
 Không stop worker khi task đang active. Kiểm tra trước:
 
 ```bash
-docker compose -f docker-compose.infra.yml exec worker-datasets \
+docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets \
   celery -A visiox inspect active
 ```
 

@@ -120,6 +120,11 @@ standard `username`, `email`, `password`, `is_staff`, `is_active`, `is_superuser
 | name | varchar(255) | |
 | description | text | nullable |
 | version | integer | default 1 |
+| verification_status | varchar(20) | `unverified` / `verified` |
+| verified_by_id | bigint | nullable → core user (SET NULL) |
+| verified_at | timestamptz | nullable |
+| split_config | jsonb | generated/imported split configuration |
+| split_updated_at | timestamptz | nullable |
 | created_at, updated_at | timestamptz | |
 - **Permissions:** `upload_media`, `export_dataset`
 
@@ -155,6 +160,22 @@ Progress tracking for a background augmentation run (shared across workers).
 | generated | integer | successfully created |
 | error | text | nullable |
 | created_at, updated_at | timestamptz | `updated_at` = heartbeat for stale detection |
+
+### `dataset_import_jobs`
+Persistent state for asynchronous image, YOLO26 and COCO imports.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| dataset_id | bigint | → datasets (CASCADE) |
+| format | varchar(20) | `images` / `yolo26` / `coco` |
+| status | varchar(20) | `queued` / `running` / `done` / `error` |
+| staged_files | jsonb | object descriptors in import staging |
+| total | integer | total import items discovered |
+| done | integer | items processed |
+| summary | jsonb | final import counts/details |
+| error | text | nullable, user-visible failure detail |
+| created_by_id | bigint | nullable → core user (SET NULL) |
+| created_at, updated_at | timestamptz | persistent progress timestamps |
 
 ---
 
