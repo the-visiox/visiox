@@ -110,6 +110,11 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Dataset imports accept up to 500 files in one multipart request. Django's
+# default limit is 100, which rejects larger imports before DRF can validate
+# them and only returns a generic "Bad Request" response.
+DATA_UPLOAD_MAX_NUMBER_FILES = int(os.getenv('DATA_UPLOAD_MAX_NUMBER_FILES', '600'))
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = 'core.UserModel'

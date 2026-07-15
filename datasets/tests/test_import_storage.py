@@ -4,6 +4,9 @@ import zipfile
 from io import BytesIO
 from unittest.mock import Mock
 
+from django.conf import settings
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test.client import RequestFactory
 from django.test import SimpleTestCase, override_settings
 
 from datasets.views.dataset_view import (
@@ -46,6 +49,17 @@ class _FakeMedia:
 
 
 class DatasetImportStorageTests(SimpleTestCase):
+    def test_multipart_parser_accepts_169_image_files(self):
+        self.assertGreaterEqual(settings.DATA_UPLOAD_MAX_NUMBER_FILES, 500)
+        files = [
+            SimpleUploadedFile(f'image-{index}.jpg', b'image', content_type='image/jpeg')
+            for index in range(169)
+        ]
+
+        request = RequestFactory().post('/datasets/1/start-import/', {'files': files})
+
+        self.assertEqual(len(request.FILES.getlist('files')), 169)
+
     @override_settings(DATASET_IMPORT_STORAGE_WORKERS=3)
     def test_storage_batch_runs_with_bounded_concurrency(self):
         tracker = {'active': 0, 'maximum': 0, 'lock': threading.Lock()}
