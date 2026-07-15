@@ -10,6 +10,7 @@ from datasets.views.dataset_view import (
     _dataset_import_batch_size,
     _dataset_import_storage_workers,
     _duplicate_names_error,
+    _yolo_image_name_map,
     _read_yolo_label_rows,
     _save_media_batch,
     _yolo_class_color,
@@ -80,6 +81,34 @@ class DatasetImportStorageTests(SimpleTestCase):
 
     def test_standard_yolo_class_ids_keep_zero_based_index(self):
         self.assertEqual(_yolo_class_index_offset({0, 2}, 3), 0)
+
+    def test_duplicate_yolo_basenames_are_prefixed_with_split(self):
+        image_keys = [
+            'dataset/test/images/camera.jpg',
+            'dataset/train/images/camera.jpg',
+            'dataset/train/images/unique.jpg',
+        ]
+        split_map = {image_key: _split for image_key, _split in zip(image_keys, ['test', 'train', 'train'])}
+
+        names = _yolo_image_name_map(image_keys, split_map)
+
+        self.assertEqual(names[image_keys[0]], 'test__camera.jpg')
+        self.assertEqual(names[image_keys[1]], 'train__camera.jpg')
+        self.assertEqual(names[image_keys[2]], 'unique.jpg')
+        self.assertEqual(len(set(names.values())), len(image_keys))
+
+    def test_yolo_generated_name_does_not_collide_with_real_basename(self):
+        image_keys = [
+            'dataset/test/images/camera.jpg',
+            'dataset/train/images/camera.jpg',
+            'dataset/train/images/test__camera.jpg',
+        ]
+        split_map = {image_key: _split for image_key, _split in zip(image_keys, ['test', 'train', 'train'])}
+
+        names = _yolo_image_name_map(image_keys, split_map)
+
+        self.assertEqual(names[image_keys[0]], 'test__camera__2.jpg')
+        self.assertEqual(len(set(names.values())), len(image_keys))
 
     def test_yolo_class_colors_are_distinct_and_repeat_safely(self):
         colors = [_yolo_class_color(index) for index in range(4)]

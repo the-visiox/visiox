@@ -512,6 +512,38 @@ def _yolo_split_name(image_key: str) -> str | None:
     return None
 
 
+def _yolo_image_name_map(image_keys: list[str], split_map: dict[str, str | None]) -> dict[str, str]:
+    """Return stable unique media names while preserving every archive image."""
+    if len(image_keys) != len(set(image_keys)):
+        raise ValueError('YOLO ZIP contains duplicate image paths.')
+
+    base_name_counts: dict[str, int] = {}
+    for image_key in image_keys:
+        base_name = posixpath.basename(image_key)
+        base_name_counts[base_name] = base_name_counts.get(base_name, 0) + 1
+
+    result = {
+        image_key: posixpath.basename(image_key)
+        for image_key in image_keys
+        if base_name_counts[posixpath.basename(image_key)] == 1
+    }
+    used_names = set(result.values())
+    for image_key in sorted(image_keys):
+        base_name = posixpath.basename(image_key)
+        if base_name_counts[base_name] == 1:
+            continue
+        stem, extension = posixpath.splitext(base_name)
+        split = split_map.get(image_key) or 'image'
+        candidate = f'{split}__{stem}{extension}'
+        sequence = 2
+        while candidate in used_names:
+            candidate = f'{split}__{stem}__{sequence}{extension}'
+            sequence += 1
+        result[image_key] = candidate
+        used_names.add(candidate)
+    return result
+
+
 def _clamp_float(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
@@ -871,9 +903,8 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
             job.done = 0
             job.save(update_fields=['total', 'done', 'updated_at'])
 
-        filenames = [posixpath.basename(name) for name in image_keys]
-        if len(filenames) != len(set(filenames)):
-            raise ValueError('Image file names inside the ZIP must be unique.')
+        image_name_map = _yolo_image_name_map(image_keys, image_split_map)
+        filenames = list(image_name_map.values())
         label_rows_by_image, class_index_offset = _read_yolo_label_rows(
             archive,
             set(members),
@@ -923,12 +954,16 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
                 new_media_batch = []
                 existing_media_batch = []
                 for image_key in image_batch:
-                    image_name = posixpath.basename(image_key)
+                    source_image_name = posixpath.basename(image_key)
+                    image_name = image_name_map[image_key]
                     split = image_split_map[image_key]
                     metadata = {
                         'import_format': 'yolo26',
                         'source_archive': archive_name,
+                        'source_archive_path': image_key,
                     }
+                    if image_name != source_image_name:
+                        metadata['source_filename'] = source_image_name
                     if job:
                         metadata['import_job_id'] = job.id
                     if split:
@@ -1074,6 +1109,10 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
             'classes': len(class_names),
             'splits': split_counts,
             'class_index_base': 1 if class_index_offset else 0,
+            'renamed_images': sum(
+                image_name_map[image_key] != posixpath.basename(image_key)
+                for image_key in image_keys
+            ),
         }
 
 
