@@ -1,3 +1,6 @@
+import requests
+
+from django.conf import settings
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import viewsets, status
@@ -15,6 +18,7 @@ from deployments.serializers import (
     DriftAlertSerializer,
 )
 from deployments.tasks import check_endpoint_drift
+from datasets.models import Dataset
 
 
 class ModelRegistryViewSet(viewsets.ModelViewSet):
@@ -43,6 +47,58 @@ class ModelRegistryViewSet(viewsets.ModelViewSet):
             'message': f'Rolled back from v{entry.version} to v{previous.version}',
             'active_version': ModelRegistrySerializer(previous).data,
         })
+
+    @extend_schema(responses={200: dict})
+    @action(detail=True, methods=['post'], url_path='predict-dataset')
+    def predict_dataset(self, request, pk=None):
+        entry = self.get_object()
+        dataset_id = request.data.get('dataset')
+        if not dataset_id:
+            return Response({'error': 'dataset is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        dataset = Dataset.objects.filter(
+            project_access_q(request.user, 'project__'),
+            pk=dataset_id,
+        ).first()
+        if not dataset:
+            return Response({'error': 'Dataset not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        inference_url = getattr(settings, 'INFERENCE_API_URL', '').rstrip('/')
+        if not inference_url:
+            return Response(
+                {'error': 'INFERENCE_API_URL is not configured on the backend.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        media_ids = request.data.get('media_ids') or []
+        payload = {
+            'model': {
+                'registry_id': entry.id,
+                'name': entry.name,
+                'version': entry.version,
+                'format': entry.format,
+                'storage_key': entry.model_file.name if entry.model_file else None,
+            },
+            'dataset': {
+                'id': dataset.id,
+                'media_ids': media_ids,
+            },
+            'confidence': request.data.get('confidence'),
+        }
+        try:
+            headers = {}
+            if settings.INFERENCE_AGENT_TOKEN:
+                headers['Authorization'] = f'Bearer {settings.INFERENCE_AGENT_TOKEN}'
+            response = requests.post(
+                f'{inference_url}/v1/predict-dataset',
+                json=payload,
+                headers=headers,
+                timeout=120,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            return Response({'error': f'Inference server request failed: {exc}'}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(response.json())
 
 
 class InferenceEndpointViewSet(viewsets.ModelViewSet):

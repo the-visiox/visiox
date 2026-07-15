@@ -48,6 +48,10 @@ def media_thumb_path(instance, filename):
 
 
 class Dataset(models.Model):
+    VERIFICATION_CHOICES = [
+        ('unverified', 'Unverified'),
+        ('verified', 'Verified for training'),
+    ]
     project = models.ForeignKey(
         'projects.Project',
         on_delete=models.CASCADE,
@@ -56,6 +60,21 @@ class Dataset(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
     version = models.PositiveIntegerField(default=1)
+    verification_status = models.CharField(
+        max_length=20,
+        choices=VERIFICATION_CHOICES,
+        default='unverified',
+    )
+    verified_by = models.ForeignKey(
+        'core.UserModel',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='verified_datasets',
+    )
+    verified_at = models.DateTimeField(null=True, blank=True)
+    split_config = models.JSONField(default=dict, blank=True)
+    split_updated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -69,6 +88,50 @@ class Dataset(models.Model):
 
     def __str__(self):
         return f"{self.name} v{self.version} - {self.project.name}"
+
+    def invalidate_training_verification(self):
+        """Require review and a fresh split after raw annotations change."""
+        if (
+            self.verification_status == 'unverified'
+            and not self.verified_at
+            and not self.verified_by_id
+            and not self.split_config
+            and not self.split_updated_at
+        ):
+            return
+        self.verification_status = 'unverified'
+        self.verified_by = None
+        self.verified_at = None
+        self.split_config = {}
+        self.split_updated_at = None
+        self.save(update_fields=[
+            'verification_status', 'verified_by', 'verified_at',
+            'split_config', 'split_updated_at', 'updated_at',
+        ])
+
+        raw_media = []
+        for media in self.media_files.filter(type='image').only('id', 'metadata'):
+            metadata = dict(media.metadata or {})
+            if metadata.get('category') == 'augmented' or 'split' not in metadata:
+                continue
+            metadata.pop('split', None)
+            media.metadata = metadata
+            raw_media.append(media)
+        if raw_media:
+            Media.objects.bulk_update(raw_media, ['metadata'])
+
+    @property
+    def generation_is_current(self):
+        """Whether the current verified split has been generated successfully."""
+        if not self.verified_at or not self.split_updated_at:
+            return False
+        if (self.split_config or {}).get('source') in ('imported_yolo26', 'imported_coco'):
+            return True
+        generated_after = max(self.verified_at, self.split_updated_at)
+        return self.augmentation_jobs.filter(
+            status='done',
+            updated_at__gte=generated_after,
+        ).exists()
 
 
 class Media(models.Model):
@@ -167,3 +230,46 @@ class AugmentationJob(models.Model):
 
     def __str__(self):
         return f"AugmentationJob {self.id} ({self.status}) {self.done}/{self.total}"
+
+
+class DatasetImportJob(models.Model):
+    STATUS_CHOICES = [
+        ('queued', 'Queued'),
+        ('running', 'Running'),
+        ('done', 'Done'),
+        ('error', 'Error'),
+    ]
+    FORMAT_CHOICES = [
+        ('images', 'Images'),
+        ('yolo26', 'YOLO26'),
+        ('coco', 'COCO'),
+    ]
+
+    dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name='import_jobs',
+    )
+    format = models.CharField(max_length=20, choices=FORMAT_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='queued')
+    staged_files = models.JSONField(default=list, blank=True)
+    total = models.PositiveIntegerField(default=0)
+    done = models.PositiveIntegerField(default=0)
+    summary = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True, null=True)
+    created_by = models.ForeignKey(
+        'core.UserModel',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='dataset_import_jobs',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'dataset_import_jobs'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"DatasetImportJob {self.id} ({self.format}/{self.status}) {self.done}/{self.total}"

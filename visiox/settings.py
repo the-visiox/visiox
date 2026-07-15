@@ -195,6 +195,29 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
+# Dataset imports use a small thread pool only for storage I/O. ORM writes stay
+# on the Celery task thread. Keep this bounded to avoid overwhelming MinIO.
+DATASET_IMPORT_STORAGE_WORKERS = int(os.getenv('DATASET_IMPORT_STORAGE_WORKERS', '4'))
+DATASET_IMPORT_BATCH_SIZE = int(os.getenv('DATASET_IMPORT_BATCH_SIZE', '16'))
+
+# GPU training agent. The callback URL must be reachable from the GPU host
+# (use the API container/LAN address, never localhost in production).
+TRAINING_AGENT_URL = os.getenv('TRAINING_AGENT_URL', 'http://localhost:8002').rstrip('/')
+TRAINING_AGENT_TOKEN = os.getenv('TRAINING_AGENT_TOKEN', '')
+TRAINING_CALLBACK_TOKEN = os.getenv('TRAINING_CALLBACK_TOKEN', '')
+TRAINING_CALLBACK_BASE_URL = os.getenv(
+    'TRAINING_CALLBACK_BASE_URL', 'http://localhost:8000'
+).rstrip('/')
+TRAINING_AGENT_TIMEOUT = int(os.getenv('TRAINING_AGENT_TIMEOUT', '15'))
+TRAINING_LABEL_DELIVERY = os.getenv(
+    'TRAINING_LABEL_DELIVERY',
+    os.getenv('TRAINING_LABEL_SOURCE', 'minio'),
+).lower()
+TRAINING_LABEL_SOURCE = TRAINING_LABEL_DELIVERY
+TRAINING_AGENT_MINIO_ENDPOINT = os.getenv('TRAINING_AGENT_MINIO_ENDPOINT', '').rstrip('/')
+INFERENCE_API_URL = os.getenv('INFERENCE_API_URL', '').rstrip('/')
+INFERENCE_AGENT_TOKEN = os.getenv('INFERENCE_AGENT_TOKEN') or TRAINING_AGENT_TOKEN
+
 # Storage — local by default, switch to MinIO via env
 USE_MINIO = os.getenv('USE_MINIO', 'False') == 'True'
 

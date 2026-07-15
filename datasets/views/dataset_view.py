@@ -1,7 +1,14 @@
-import json
 import logging
+import posixpath
+import uuid
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 
 from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files import File
+from django.core.files.storage import default_storage
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import viewsets, status
@@ -16,10 +23,10 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 
 from core.jwt_query_auth import JWTAuthQueryOrHeader
 
-from annotations.models import Annotation
+from annotations.models import Annotation, Class
 from annotations.serializers import AnnotationSerializer, JobAnnotationsReplaceSerializer
 from core.permissions import HasPerm
-from datasets.models import AugmentationJob, Dataset, Media
+from datasets.models import AugmentationJob, Dataset, DatasetImportJob, Media
 from datasets.serializers import (
     DatasetSerializer,
     MediaSerializer,
@@ -37,6 +44,84 @@ from datasets.standalone import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_IMPORT_STORAGE_WORKERS = 4
+MAX_IMPORT_STORAGE_WORKERS = 16
+DEFAULT_IMPORT_BATCH_SIZE = 16
+
+
+def _dataset_import_storage_workers() -> int:
+    configured = int(getattr(settings, 'DATASET_IMPORT_STORAGE_WORKERS', DEFAULT_IMPORT_STORAGE_WORKERS))
+    return max(1, min(configured, MAX_IMPORT_STORAGE_WORKERS))
+
+
+def _dataset_import_batch_size() -> int:
+    configured = int(getattr(settings, 'DATASET_IMPORT_BATCH_SIZE', DEFAULT_IMPORT_BATCH_SIZE))
+    return max(1, configured)
+
+
+def _chunked(items: list, size: int):
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
+def _save_media_file(entry) -> None:
+    media, filename, content = entry
+    media.file.save(filename, content, save=False)
+
+
+def _delete_unsaved_media_files(media_items: list[Media]) -> None:
+    for media in media_items:
+        storage_name = getattr(media.file, 'name', '')
+        if not storage_name:
+            continue
+        try:
+            media.file.storage.delete(storage_name)
+        except Exception:
+            logger.warning('Unable to clean up imported media file %s', storage_name, exc_info=True)
+
+
+def _save_media_batch(entries: list[tuple[Media, str, object]]) -> None:
+    """Upload a bounded batch concurrently while keeping ORM writes on the main thread."""
+    if not entries:
+        return
+
+    media_items = [entry[0] for entry in entries]
+    workers = min(_dataset_import_storage_workers(), len(entries))
+    try:
+        if workers == 1:
+            for entry in entries:
+                _save_media_file(entry)
+            return
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='dataset-storage') as executor:
+            list(executor.map(_save_media_file, entries))
+    except Exception:
+        _delete_unsaved_media_files(media_items)
+        raise
+
+
+def _enqueue_dataset_label_cache_refresh(dataset_id: int) -> None:
+    from datasets.tasks import enqueue_dataset_label_cache_refresh
+
+    enqueue_dataset_label_cache_refresh(dataset_id)
+
+
+def _enqueue_dataset_label_cache_clear(dataset_id: int) -> None:
+    from datasets.tasks import enqueue_dataset_label_cache_clear
+
+    enqueue_dataset_label_cache_clear(dataset_id)
+
+
+def _verification_is_current(dataset: Dataset) -> bool:
+    if dataset.verification_status != 'verified' or not dataset.verified_at:
+        return False
+    images = dataset.media_files.filter(type='image').filter(
+        Q(metadata__category__isnull=True) | ~Q(metadata__category='augmented')
+    )
+    return not (
+        images.filter(uploaded_at__gt=dataset.verified_at).exists()
+        or images.filter(annotations__updated_at__gt=dataset.verified_at).exists()
+    )
 
 
 def _extract_image_dimensions(file):
@@ -179,6 +264,8 @@ def _augment_dataset(dataset: Dataset, pre: dict, aug: dict, multiplier: int, pr
 
     pre_transforms, aug_transforms = _build_transform_lists(pre, aug)
     transforms = pre_transforms + aug_transforms
+    if not transforms:
+        return 0
     ann_pipeline = A.Compose(
         transforms,
         bbox_params=A.BboxParams(format='pascal_voc', label_fields=['bbox_idx'], clip=True, min_visibility=0.0),
@@ -188,7 +275,7 @@ def _augment_dataset(dataset: Dataset, pre: dict, aug: dict, multiplier: int, pr
     def _clamp(v, lo, hi):
         return max(lo, min(hi, v))
 
-    media_list = raw_image_media(dataset)
+    media_list = [media for media in raw_image_media(dataset) if (media.metadata or {}).get('split') == 'train']
     generated = 0
     done = 0
 
@@ -255,7 +342,8 @@ def _augment_dataset(dataset: Dataset, pre: dict, aug: dict, multiplier: int, pr
                 aug_name = f'aug_{i + 1}_{original_stem}.jpg'
                 new_media = Media(
                     dataset=dataset, type='image', original_filename=aug_name,
-                    width=pil_out.width, height=pil_out.height, metadata={'category': 'augmented'},
+                    width=pil_out.width, height=pil_out.height,
+                    metadata={'category': 'augmented', 'source_media_id': media.id, 'split': 'train'},
                 )
                 new_media._upload_category = 'augmented'
                 new_media.file.save(aug_name, ContentFile(full_bytes), save=True)
@@ -357,6 +445,554 @@ def run_augmentation_job(job_id: int, dataset_id: int, pre: dict, aug: dict, mul
 AUG_JOB_STALE_SECONDS = 300
 
 
+YOLO_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+MEDIA_IMAGE_EXTENSIONS = YOLO_IMAGE_EXTENSIONS | {'.gif', '.tif', '.tiff'}
+MEDIA_VIDEO_EXTENSIONS = {'.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v'}
+
+
+def _zip_file_members(archive: zipfile.ZipFile) -> list[str]:
+    return [
+        name.replace('\\', '/')
+        for name in archive.namelist()
+        if name and not name.endswith('/') and not name.startswith('__MACOSX/')
+    ]
+
+
+def _parse_yolo_names(data_yaml: str) -> list[str]:
+    names: list[str] = []
+    in_names_block = False
+    for raw_line in data_yaml.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('names:'):
+            value = line.split(':', 1)[1].strip()
+            if value.startswith('[') and value.endswith(']'):
+                return [
+                    item.strip().strip('"\'')
+                    for item in value[1:-1].split(',')
+                    if item.strip().strip('"\'')
+                ]
+            if value:
+                return [value.strip('"\'')]
+            in_names_block = True
+            continue
+        if in_names_block:
+            if line.startswith('- '):
+                names.append(line[2:].strip().strip('"\''))
+                continue
+            if ':' in line:
+                _, value = line.split(':', 1)
+                value = value.strip().strip('"\'')
+                if value:
+                    names.append(value)
+                continue
+            break
+    return names
+
+
+def _yolo_label_key(image_key: str) -> str:
+    parts = image_key.split('/')
+    try:
+        images_idx = parts.index('images')
+    except ValueError:
+        return ''
+    label_parts = parts[:]
+    label_parts[images_idx] = 'labels'
+    label_parts[-1] = posixpath.splitext(label_parts[-1])[0] + '.txt'
+    return '/'.join(label_parts)
+
+
+def _yolo_split_name(image_key: str) -> str | None:
+    for part in image_key.split('/'):
+        if part in ('train', 'test'):
+            return part
+        if part in ('valid', 'val'):
+            return 'val'
+    return None
+
+
+def _clamp_float(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _delete_staged_files(staged_files: list[dict]) -> None:
+    for item in staged_files:
+        key = item.get('key')
+        if key:
+            try:
+                default_storage.delete(key)
+            except Exception:
+                logger.warning('Unable to delete staged import file %s', key, exc_info=True)
+
+
+def _infer_media_type(uploaded_file, forced_media_type: str | None = None) -> str | None:
+    if forced_media_type in ('image', 'video'):
+        return forced_media_type
+    content_type = (getattr(uploaded_file, 'content_type', '') or '').lower()
+    if content_type.startswith('image/'):
+        return 'image'
+    if content_type.startswith('video/'):
+        return 'video'
+    extension = posixpath.splitext(getattr(uploaded_file, 'name', '') or '')[1].lower()
+    if extension in MEDIA_IMAGE_EXTENSIONS:
+        return 'image'
+    if extension in MEDIA_VIDEO_EXTENSIONS:
+        return 'video'
+    return None
+
+
+def _validate_dataset_import_files(
+    dataset: Dataset,
+    import_format: str,
+    files: list,
+    *,
+    forced_media_type: str | None = None,
+    max_files: int | None = None,
+) -> None:
+    if not files:
+        raise ValueError('No files provided. Use form field "files".')
+    if max_files is not None and len(files) > max_files:
+        raise ValueError(f'Maximum {max_files} files per import job.')
+
+    if import_format == 'yolo26':
+        if len(files) != 1:
+            raise ValueError('YOLO26 import requires exactly one .zip archive.')
+        if not files[0].name.lower().endswith('.zip'):
+            raise ValueError('YOLO26 import requires a .zip archive.')
+        return
+
+    if import_format != 'images':
+        raise ValueError('Only Images and YOLO26 imports are currently supported.')
+
+    names = [posixpath.basename(getattr(file_obj, 'name', '') or '') for file_obj in files]
+    if not all(names):
+        raise ValueError('Every file must have a non-empty name.')
+    if len(names) != len(set(names)):
+        raise ValueError('This import contains duplicate file names.')
+    clashes = _existing_media_names_in_dataset(dataset, names)
+    if clashes:
+        raise ValueError(f'One or more file names already exist in this dataset: {", ".join(sorted(clashes))}')
+
+    unsupported = sorted(
+        posixpath.basename(getattr(file_obj, 'name', '') or '')
+        for file_obj in files
+        if _infer_media_type(file_obj, forced_media_type) is None
+    )
+    if unsupported:
+        raise ValueError(
+            f'Unsupported files for image/video import: {", ".join(unsupported[:10])}'
+        )
+
+
+def _stage_dataset_import_file(entry) -> dict:
+    index, uploaded_file, dataset_id, job_id, forced_media_type = entry
+    filename = posixpath.basename(uploaded_file.name)
+    stage_key = (
+        f'import-staging/datasets/{dataset_id}/jobs/{job_id}/'
+        f'{index + 1}_{uuid.uuid4().hex}_{filename}'
+    )
+    saved_key = default_storage.save(stage_key, uploaded_file)
+    return {
+        'key': saved_key,
+        'name': filename,
+        'size': uploaded_file.size,
+        'content_type': getattr(uploaded_file, 'content_type', ''),
+        'media_type': _infer_media_type(uploaded_file, forced_media_type),
+    }
+
+
+def _queue_dataset_import_job(
+    request,
+    dataset: Dataset,
+    files: list,
+    import_format: str,
+    *,
+    forced_media_type: str | None = None,
+) -> Response:
+    job = DatasetImportJob.objects.create(
+        dataset=dataset,
+        format=import_format,
+        status='queued',
+        total=len(files),
+        done=0,
+        created_by=request.user,
+    )
+
+    staged_files = []
+    try:
+        entries = [
+            (index, uploaded_file, dataset.id, job.id, forced_media_type)
+            for index, uploaded_file in enumerate(files)
+        ]
+        workers = min(_dataset_import_storage_workers(), len(entries))
+        if workers == 1:
+            staged_files = [_stage_dataset_import_file(entry) for entry in entries]
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='dataset-staging') as executor:
+                futures = [executor.submit(_stage_dataset_import_file, entry) for entry in entries]
+                try:
+                    staged_files = [future.result() for future in futures]
+                except Exception:
+                    staged_files = [
+                        future.result()
+                        for future in futures
+                        if future.done() and not future.cancelled() and future.exception() is None
+                    ]
+                    raise
+    except Exception as exc:
+        _delete_staged_files(staged_files)
+        job.status = 'error'
+        job.error = f'Could not stage uploaded files: {exc}'
+        job.save(update_fields=['status', 'error', 'updated_at'])
+        logger.exception('Could not stage files for dataset import job %s', job.id)
+        return Response(
+            {'detail': 'Could not stage uploaded files. Please try again.', 'job_id': job.id},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    job.staged_files = staged_files
+    job.save(update_fields=['staged_files', 'updated_at'])
+
+    from datasets.tasks import enqueue_dataset_import_job
+
+    transaction.on_commit(lambda job_id=job.id: enqueue_dataset_import_job(job_id))
+    dataset.refresh_from_db()
+    return Response(
+        {
+            'accepted': True,
+            'dataset': DatasetSerializer(dataset, context={'request': request}).data,
+            'job': {
+                'id': job.id,
+                'format': job.format,
+                'status': job.status,
+                'total': job.total,
+                'done': job.done,
+            },
+        },
+        status=status.HTTP_202_ACCEPTED,
+    )
+
+
+def _import_staged_media_files(job: DatasetImportJob) -> dict:
+    dataset = job.dataset
+    staged_files = list(job.staged_files or [])
+    names = [item.get('name') for item in staged_files if item.get('name')]
+    if len(names) != len(set(names)):
+        raise ValueError('This import contains duplicate file names.')
+    clashes = _existing_media_names_in_dataset(dataset, names)
+    if clashes:
+        raise ValueError(f'One or more file names already exist in this dataset: {", ".join(sorted(clashes))}')
+
+    # Resolve upload-path relationships before storage threads start so worker
+    # threads never trigger lazy ORM queries on their own database connections.
+    dataset.project.owner
+
+    created = 0
+    batch_size = _dataset_import_batch_size()
+    for item_batch in _chunked(staged_files, batch_size):
+        media_batch = []
+        storage_entries = []
+        with ExitStack() as sources:
+            for item in item_batch:
+                name = item.get('name')
+                key = item.get('key')
+                media_type = item.get('media_type') or 'image'
+                if not name or not key:
+                    continue
+
+                source = sources.enter_context(default_storage.open(key, 'rb'))
+                staged_file = File(source, name=name)
+                width, height = (None, None)
+                if media_type == 'image':
+                    width, height = _extract_image_dimensions(staged_file)
+                    staged_file.seek(0)
+
+                media = Media(
+                    dataset=dataset,
+                    type=media_type,
+                    original_filename=name,
+                    width=width,
+                    height=height,
+                    file_size=item.get('size') or getattr(staged_file, 'size', None),
+                    metadata={'import_format': 'images', 'import_job_id': job.id},
+                )
+                media_batch.append(media)
+                storage_entries.append((media, name, staged_file))
+
+            _save_media_batch(storage_entries)
+
+        try:
+            Media.objects.bulk_create(media_batch)
+        except Exception:
+            _delete_unsaved_media_files(media_batch)
+            raise
+
+        created += len(media_batch)
+        job.done = created
+        job.save(update_fields=['done', 'updated_at'])
+
+    return {'format': 'images', 'files': created}
+
+
+def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_name: str, user, job: DatasetImportJob | None = None) -> dict:
+    try:
+        archive = zipfile.ZipFile(archive_file)
+    except zipfile.BadZipFile as exc:
+        raise ValueError('The uploaded file is not a valid ZIP archive.') from exc
+
+    with archive:
+        members = _zip_file_members(archive)
+        data_yaml_key = next((name for name in members if posixpath.basename(name).lower() in ('data.yaml', 'data.yml')), None)
+        if not data_yaml_key:
+            raise ValueError('YOLO26 ZIP must include data.yaml.')
+
+        try:
+            data_yaml = archive.read(data_yaml_key).decode('utf-8')
+        except UnicodeDecodeError as exc:
+            raise ValueError('data.yaml must be UTF-8 encoded.') from exc
+
+        class_names = _parse_yolo_names(data_yaml)
+        if not class_names:
+            raise ValueError('data.yaml must define at least one class in names.')
+
+        image_keys = [
+            name
+            for name in members
+            if '/images/' in f'/{name}'
+            and posixpath.splitext(name)[1].lower() in YOLO_IMAGE_EXTENSIONS
+        ]
+        if not image_keys:
+            raise ValueError('YOLO26 ZIP must include images under train/valid/test images folders.')
+
+        image_split_map = {name: _yolo_split_name(name) for name in image_keys}
+        missing_split = [name for name, split in image_split_map.items() if split is None]
+        if missing_split:
+            raise ValueError('Every YOLO26 image must be under train/images, valid/images, val/images, or test/images.')
+        available_splits = set(image_split_map.values())
+        if 'train' not in available_splits or 'val' not in available_splits:
+            raise ValueError('YOLO26 ZIP must include both train and valid/val image splits.')
+
+        if job:
+            job.total = len(image_keys)
+            job.done = 0
+            job.save(update_fields=['total', 'done', 'updated_at'])
+
+        filenames = [posixpath.basename(name) for name in image_keys]
+        if len(filenames) != len(set(filenames)):
+            raise ValueError('Image file names inside the ZIP must be unique.')
+        clashes = _existing_media_names_in_dataset(dataset, filenames)
+        if clashes:
+            raise ValueError(f'One or more image names already exist in this dataset: {", ".join(sorted(clashes))}')
+
+        split_counts = {'train': 0, 'val': 0, 'test': 0}
+        class_split_counts = {
+            class_name: {'train': 0, 'val': 0, 'test': 0}
+            for class_name in class_names
+        }
+        with transaction.atomic():
+            classes = []
+            for class_name in class_names:
+                class_obj, _ = Class.objects.get_or_create(project=dataset.project, name=class_name)
+                classes.append(class_obj)
+
+            dataset.project.owner
+            created_media = []
+            annotations = []
+            batch_size = _dataset_import_batch_size()
+            for image_batch in _chunked(image_keys, batch_size):
+                prepared_media = []
+                storage_entries = []
+                for image_key in image_batch:
+                    image_name = posixpath.basename(image_key)
+                    image_content = ContentFile(archive.read(image_key), name=image_name)
+                    width, height = _extract_image_dimensions(image_content)
+                    image_content.seek(0)
+                    split = image_split_map[image_key]
+                    metadata = {
+                        'import_format': 'yolo26',
+                        'source_archive': archive_name,
+                    }
+                    if job:
+                        metadata['import_job_id'] = job.id
+                    if split:
+                        metadata['split'] = split
+                        if metadata['split'] in split_counts:
+                            split_counts[metadata['split']] += 1
+
+                    media = Media(
+                        dataset=dataset,
+                        type='image',
+                        original_filename=image_name,
+                        width=width,
+                        height=height,
+                        file_size=image_content.size,
+                        metadata=metadata,
+                    )
+                    prepared_media.append((image_key, media, width, height, metadata))
+                    storage_entries.append((media, image_name, image_content))
+
+                _save_media_batch(storage_entries)
+                media_batch = [item[1] for item in prepared_media]
+                try:
+                    Media.objects.bulk_create(media_batch)
+                except Exception:
+                    _delete_unsaved_media_files(media_batch)
+                    raise
+
+                for image_key, media, width, height, metadata in prepared_media:
+                    created_media.append(media)
+                    label_key = _yolo_label_key(image_key)
+                    if not label_key or label_key not in members or not width or not height:
+                        continue
+                    label_text = archive.read(label_key).decode('utf-8', errors='ignore')
+                    media_class_splits = set()
+                    for line in label_text.splitlines():
+                        parts = line.strip().split()
+                        if len(parts) < 5:
+                            continue
+                        try:
+                            class_idx = int(float(parts[0]))
+                            cx, cy, bw, bh = [float(value) for value in parts[1:5]]
+                        except (TypeError, ValueError):
+                            continue
+                        if class_idx < 0 or class_idx >= len(classes):
+                            continue
+                        media_split = metadata.get('split')
+                        if media_split in ('train', 'val', 'test'):
+                            media_class_splits.add((class_names[class_idx], media_split))
+
+                        box_width = bw * width
+                        box_height = bh * height
+                        x = (cx * width) - (box_width / 2)
+                        y = (cy * height) - (box_height / 2)
+                        x = _clamp_float(x, 0, width)
+                        y = _clamp_float(y, 0, height)
+                        box_width = _clamp_float(box_width, 0, width - x)
+                        box_height = _clamp_float(box_height, 0, height - y)
+                        if box_width <= 0 or box_height <= 0:
+                            continue
+
+                        annotations.append(
+                            Annotation(
+                                media=media,
+                                class_label=classes[class_idx],
+                                annotator=user,
+                                type='bbox',
+                                data={
+                                    'x': round(x, 2),
+                                    'y': round(y, 2),
+                                    'width': round(box_width, 2),
+                                    'height': round(box_height, 2),
+                                },
+                                frame=0,
+                            )
+                        )
+                    for class_name, media_split in media_class_splits:
+                        class_split_counts[class_name][media_split] += 1
+
+                if job:
+                    job.done = len(created_media)
+                    job.save(update_fields=['done', 'updated_at'])
+
+            if annotations:
+                Annotation.objects.bulk_create(annotations, batch_size=1000)
+
+            from django.utils import timezone
+
+            now = timezone.now()
+            total_images = sum(split_counts.values()) or len(created_media)
+            dataset.verification_status = 'verified'
+            dataset.verified_by = user
+            dataset.verified_at = now
+            dataset.split_updated_at = now
+            dataset.split_config = {
+                'source': 'imported_yolo26',
+                'format': 'yolo26',
+                'archive_name': archive_name,
+                'train': round(split_counts['train'] * 100 / total_images) if total_images else 0,
+                'val': round(split_counts['val'] * 100 / total_images) if total_images else 0,
+                'test': round(split_counts['test'] * 100 / total_images) if total_images else 0,
+                'seed': None,
+                'strategy': 'imported',
+                'test_dataset_id': None,
+                'test_dataset_name': None,
+                'summary': {
+                    'train': {'raw': split_counts['train'], 'augmented': 0},
+                    'val': {'raw': split_counts['val'], 'augmented': 0},
+                    'test': {'raw': split_counts['test'], 'augmented': 0},
+                    'classes': [
+                        {
+                            'name': class_name,
+                            **class_split_counts[class_name],
+                        }
+                        for class_name in class_names
+                    ],
+                },
+            }
+            dataset.save(update_fields=[
+                'verification_status',
+                'verified_by',
+                'verified_at',
+                'split_config',
+                'split_updated_at',
+                'updated_at',
+            ])
+
+        return {
+            'format': 'yolo26',
+            'images': len(created_media),
+            'annotations': len(annotations),
+            'classes': len(class_names),
+            'splits': split_counts,
+        }
+
+
+def run_dataset_import_job(job_id: int) -> None:
+    from django.db import connection
+
+    job = DatasetImportJob.objects.select_related(
+        'dataset__project__owner',
+        'created_by',
+    ).get(id=job_id)
+    job.status = 'running'
+    job.error = ''
+    job.save(update_fields=['status', 'error', 'updated_at'])
+
+    try:
+        if job.format == 'images':
+            summary = _import_staged_media_files(job)
+        elif job.format == 'yolo26':
+            staged = (job.staged_files or [])[0] if job.staged_files else None
+            if not staged or not staged.get('key'):
+                raise ValueError('No staged YOLO26 archive found.')
+            with default_storage.open(staged['key'], 'rb') as archive_file:
+                summary = _import_yolo26_archive_from_file(
+                    job.dataset,
+                    archive_file,
+                    staged.get('name') or 'dataset.zip',
+                    job.created_by,
+                    job,
+                )
+            transaction.on_commit(lambda dataset_id=job.dataset_id: _enqueue_dataset_label_cache_refresh(dataset_id))
+        else:
+            raise ValueError('Only Images and YOLO26 imports are currently supported.')
+
+        job.summary = summary
+        job.done = job.total
+        job.status = 'done'
+        job.error = ''
+        job.save(update_fields=['summary', 'done', 'status', 'error', 'updated_at'])
+    except Exception as exc:
+        logger.exception('Dataset import job %s failed', job.id)
+        job.status = 'error'
+        job.error = str(exc)
+        job.save(update_fields=['status', 'error', 'updated_at'])
+    finally:
+        _delete_staged_files(job.staged_files or [])
+        connection.close()
+
+
 class DatasetViewSet(viewsets.ModelViewSet):
     serializer_class = DatasetSerializer
     queryset = Dataset.objects.none()
@@ -369,7 +1005,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
             Q(project__owner=user)
             | Q(project__team__owner=user)
             | Q(project__team__members__user=user)
-        ).distinct().select_related('project__team')
+        ).distinct().select_related('project__team').prefetch_related('import_jobs')
         project_id = self.request.query_params.get('project')
         if project_id:
             queryset = queryset.filter(project_id=project_id)
@@ -380,8 +1016,10 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         if self.action == 'destroy':
             return [HasPerm('datasets.delete_dataset')]
-        if self.action in ('upload', 'upload_batch'):
+        if self.action in ('upload', 'upload_batch', 'import_archive', 'start_import'):
             return [HasPerm('datasets.upload_media')]
+        if self.action == 'verify':
+            return [HasPerm('annotations.approve_annotation')]
         if self.action == 'media' and self.request.method == 'DELETE':
             return [HasPerm('datasets.upload_media')]
         return super().get_permissions()
@@ -403,6 +1041,117 @@ class DatasetViewSet(viewsets.ModelViewSet):
             'updated_at': dataset.updated_at,
             'size': media_count,
             'annotation_count': ann_count,
+        })
+
+    @action(detail=True, methods=['post', 'delete'], url_path='verify')
+    def verify(self, request, pk=None):
+        from django.utils import timezone
+
+        dataset = self.get_object()
+        if request.method == 'DELETE':
+            with transaction.atomic():
+                augmented_media = dataset.media_files.filter(type='image').filter(
+                    Q(metadata__category='augmented') | Q(file__contains='/augmented/')
+                )
+                deleted_augmented_count = augmented_media.count()
+                augmented_media.delete()
+                dataset.augmentation_jobs.all().delete()
+                dataset.invalidate_training_verification()
+                transaction.on_commit(lambda dataset_id=dataset.id: _enqueue_dataset_label_cache_clear(dataset_id))
+                dataset.refresh_from_db()
+            response = DatasetSerializer(dataset, context={'request': request}).data
+            response['deleted_augmented_count'] = deleted_augmented_count
+            return Response(response)
+
+        images = dataset.media_files.filter(type='image').filter(
+            Q(metadata__category__isnull=True) | ~Q(metadata__category='augmented')
+        )
+        image_count = images.count()
+        labeled_count = images.filter(
+            annotations__is_valid=True,
+        ).distinct().count()
+        errors = []
+        if image_count < 2:
+            errors.append('Dataset needs at least 2 images.')
+        if labeled_count == 0:
+            errors.append('Dataset needs at least 1 labeled image; remaining images may be background.')
+        if not dataset.project.classes.exists():
+            errors.append('Project needs at least 1 annotation class.')
+        if errors:
+            return Response(
+                {'error': ' '.join(errors), 'image_count': image_count, 'labeled_count': labeled_count},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        background_count = image_count - labeled_count
+        if background_count and request.data.get('confirm_background_images') is not True:
+            return Response(
+                {
+                    'error': f'Confirm that {background_count} unlabeled images are intentional backgrounds.',
+                    'image_count': image_count,
+                    'labeled_count': labeled_count,
+                    'background_count': background_count,
+                    'requires_background_confirmation': True,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dataset.verification_status = 'verified'
+        dataset.verified_by = request.user
+        dataset.verified_at = timezone.now()
+        dataset.save(update_fields=['verification_status', 'verified_by', 'verified_at', 'updated_at'])
+        transaction.on_commit(lambda dataset_id=dataset.id: _enqueue_dataset_label_cache_refresh(dataset_id))
+        return Response(DatasetSerializer(dataset, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], url_path='split')
+    def split(self, request, pk=None):
+        from datasets.services.splitting import configure_dataset_split
+
+        dataset = self.get_object()
+        if not _verification_is_current(dataset):
+            return Response(
+                {'error': 'Verify Annotations before configuring the dataset split.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            ratios = {name: int(request.data.get(name)) for name in ('train', 'val', 'test')}
+            seed = int(request.data.get('seed', 42))
+        except (TypeError, ValueError):
+            return Response({'error': 'Split ratios and seed must be integers.'}, status=status.HTTP_400_BAD_REQUEST)
+        strategy = request.data.get('strategy', 'class')
+        if strategy not in ('class', 'random'):
+            return Response({'error': 'Strategy must be class or random.'}, status=status.HTTP_400_BAD_REQUEST)
+        test_dataset = None
+        test_dataset_id = request.data.get('test_dataset_id')
+        if test_dataset_id not in (None, ''):
+            try:
+                test_dataset = self.get_queryset().get(id=int(test_dataset_id), project=dataset.project)
+            except (Dataset.DoesNotExist, TypeError, ValueError):
+                return Response(
+                    {'error': 'The fixed test dataset is not available in this project.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if test_dataset.id == dataset.id:
+                return Response({'error': 'Choose a different dataset for the fixed test set.'}, status=status.HTTP_400_BAD_REQUEST)
+            if test_dataset.verification_status != 'verified':
+                return Response({'error': 'Verify the fixed test dataset before using it.'}, status=status.HTTP_400_BAD_REQUEST)
+        if sum(ratios.values()) != 100:
+            return Response({'error': 'Train, validation, and test ratios must total 100%.'}, status=status.HTTP_400_BAD_REQUEST)
+        if test_dataset and ratios['test'] != 0:
+            return Response({'error': 'Set Test to 0% when using a fixed test dataset.'}, status=status.HTTP_400_BAD_REQUEST)
+        if any(ratios[name] < 0 for name in ('train', 'val', 'test')):
+            return Response(
+                {'error': 'Split ratios cannot be negative.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            summary = configure_dataset_split(dataset, ratios, seed, strategy, test_dataset)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        transaction.on_commit(lambda dataset_id=dataset.id: _enqueue_dataset_label_cache_refresh(dataset_id))
+        return Response({
+            'dataset': DatasetSerializer(dataset, context={'request': request}).data,
+            'summary': summary,
         })
 
     @action(detail=True, methods=['get', 'delete'])
@@ -440,32 +1189,19 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
         uploaded_file = serializer.validated_data['file']
         media_type = serializer.validated_data['type']
-        metadata = serializer.validated_data.get('metadata', {})
+        try:
+            _validate_dataset_import_files(dataset, 'images', [uploaded_file], forced_media_type=media_type, max_files=1)
+        except ValueError as exc:
+            detail = str(exc)
+            status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': detail}, status=status_code)
 
-        if _media_name_exists(dataset, uploaded_file.name):
-            return Response(
-                {'detail': 'A file with this name already exists in this dataset.'},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        width, height = None, None
-        if media_type == 'image':
-            width, height = _extract_image_dimensions(uploaded_file)
-
-        media = Media.objects.create(
-            dataset=dataset,
-            type=media_type,
-            file=uploaded_file,
-            original_filename=uploaded_file.name,
-            width=width,
-            height=height,
-            file_size=uploaded_file.size,
-            metadata=metadata,
-        )
-
-        return Response(
-            MediaSerializer(media, context={'request': request}).data,
-            status=status.HTTP_201_CREATED,
+        return _queue_dataset_import_job(
+            request,
+            dataset,
+            [uploaded_file],
+            'images',
+            forced_media_type=media_type,
         )
 
     @action(
@@ -477,71 +1213,62 @@ class DatasetViewSet(viewsets.ModelViewSet):
     def upload_batch(self, request, pk=None):
         dataset = self.get_object()
         files = request.FILES.getlist('files')
-        if not files:
-            return Response(
-                {'detail': 'No files provided. Use form field "files".'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if len(files) > 100:
-            return Response({'detail': 'Maximum 100 files per request.'}, status=status.HTTP_400_BAD_REQUEST)
-
         media_type = request.data.get('type', 'image')
         if media_type not in ('image', 'video'):
             return Response({'detail': 'type must be "image" or "video".'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            _validate_dataset_import_files(dataset, 'images', files, forced_media_type=media_type, max_files=100)
+        except ValueError as exc:
+            detail = str(exc)
+            status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': detail}, status=status_code)
 
-        metadata_raw = request.data.get('metadata')
-        metadata = {}
-        if metadata_raw not in (None, ''):
-            try:
-                metadata = json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
-                if not isinstance(metadata, dict):
-                    metadata = {}
-            except (json.JSONDecodeError, TypeError):
-                metadata = {}
-
-        names = [f.name for f in files]
-        if not all(names):
-            return Response(
-                {'detail': 'Every file must have a non-empty name.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if len(names) != len(set(names)):
-            return Response(
-                {'detail': 'This request contains duplicate file names.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        clashes = _existing_media_names_in_dataset(dataset, names)
-        if clashes:
-            return Response(
-                {
-                    'detail': 'One or more file names already exist in this dataset.',
-                    'files': sorted(clashes),
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        created = []
-        for uploaded_file in files:
-            width, height = None, None
-            if media_type == 'image':
-                width, height = _extract_image_dimensions(uploaded_file)
-
-            media = Media.objects.create(
-                dataset=dataset,
-                type=media_type,
-                file=uploaded_file,
-                original_filename=uploaded_file.name,
-                width=width,
-                height=height,
-                file_size=uploaded_file.size,
-                metadata=metadata,
-            )
-            created.append(media)
-
-        return Response(
-            MediaSerializer(created, many=True, context={'request': request}).data,
-            status=status.HTTP_201_CREATED,
+        return _queue_dataset_import_job(
+            request,
+            dataset,
+            files,
+            'images',
+            forced_media_type=media_type,
         )
+
+    @action(
+        detail=True,
+        methods=['post'],
+        parser_classes=[MultiPartParser, FormParser],
+        url_path='start-import',
+    )
+    def start_import(self, request, pk=None):
+        dataset = self.get_object()
+        import_format = request.data.get('format', 'images')
+        files = request.FILES.getlist('files') or ([request.FILES['file']] if 'file' in request.FILES else [])
+        try:
+            _validate_dataset_import_files(dataset, import_format, files, max_files=500)
+        except ValueError as exc:
+            detail = str(exc)
+            status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': detail}, status=status_code)
+
+        return _queue_dataset_import_job(request, dataset, files, import_format)
+
+    @action(
+        detail=True,
+        methods=['post'],
+        parser_classes=[MultiPartParser, FormParser],
+        url_path='import-archive',
+    )
+    def import_archive(self, request, pk=None):
+        dataset = self.get_object()
+        archive_file = request.FILES.get('file')
+        import_format = request.data.get('format')
+        files = [archive_file] if archive_file is not None else []
+        try:
+            _validate_dataset_import_files(dataset, import_format, files, max_files=1)
+        except ValueError as exc:
+            detail = str(exc)
+            status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': detail}, status=status_code)
+
+        return _queue_dataset_import_job(request, dataset, files, import_format)
 
     @action(detail=True, methods=['post'], url_path='versions')
     def new_version(self, request, pk=None):
@@ -568,13 +1295,17 @@ class DatasetViewSet(viewsets.ModelViewSet):
         from PIL import Image, ImageOps
 
         dataset = self.get_object()
+        if not _verification_is_current(dataset):
+            return Response({'error': 'Verify Annotations before generating a preview.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not dataset.split_config:
+            return Response({'error': 'Configure the dataset split before augmentation.'}, status=status.HTTP_400_BAD_REQUEST)
         data = request.data
         pre = data.get('preprocess', {})
         aug = data.get('augment', {})
         count = min(int(data.get('count', 6)), 12)
 
         pre_pipeline, aug_pipeline = _build_pipelines(pre, aug)
-        media_list = raw_image_media(dataset)[:count]
+        media_list = [media for media in raw_image_media(dataset) if (media.metadata or {}).get('split') == 'train'][:count]
         previews = []
 
         for media in media_list:
@@ -598,12 +1329,21 @@ class DatasetViewSet(viewsets.ModelViewSet):
         import threading
 
         dataset = self.get_object()
+        if not _verification_is_current(dataset):
+            return Response({'error': 'Verify Annotations before generating a dataset.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not dataset.split_config:
+            return Response({'error': 'Configure the dataset split before augmentation.'}, status=status.HTTP_400_BAD_REQUEST)
         data = request.data
         pre = dict(data.get('preprocess', {}) or {})
         aug = dict(data.get('augment', {}) or {})
         multiplier = max(1, min(int(data.get('multiplier', 1)), 5))
 
-        total = len(raw_image_media(dataset)) * multiplier
+        pre_transforms, aug_transforms = _build_transform_lists(pre, aug)
+        has_transforms = bool(pre_transforms or aug_transforms)
+        total = (
+            sum(1 for media in raw_image_media(dataset) if (media.metadata or {}).get('split') == 'train') * multiplier
+            if has_transforms else 0
+        )
         job = AugmentationJob.objects.create(dataset=dataset, total=total, status='running')
 
         # Production: hand off to a Celery worker (scales independently, survives web
@@ -744,5 +1484,8 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 )
                 for item in items
             ])
+            if (media.metadata or {}).get('category') != 'augmented':
+                dataset.invalidate_training_verification()
+                transaction.on_commit(lambda dataset_id=dataset.id: _enqueue_dataset_label_cache_clear(dataset_id))
         qs = Annotation.objects.filter(media=media).select_related('class_label', 'annotator')
         return Response(AnnotationSerializer(qs, many=True).data)

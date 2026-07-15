@@ -3,6 +3,7 @@ from .training_serializer import (
     TrainingJobSerializer,
     ExperimentSerializer,
     RunMetricSerializer,
+    KNOWN_TRAINING_ARTIFACTS,
 )
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     'TrainingJobSerializer',
     'ExperimentSerializer',
     'RunMetricSerializer',
+    'KNOWN_TRAINING_ARTIFACTS',
 ]

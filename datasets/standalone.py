@@ -33,15 +33,22 @@ def _annotation_to_dict(ann) -> dict:
     """Convert an Annotation instance to the browser frame annotation format."""
     data = ann.data or {}
     ann_type = ann.type
+    points = data.get('points', [])
     if ann_type == 'bbox':
         ann_type = 'rectangle'
+    if ann_type == 'rectangle' and not points:
+        x = float(data.get('x') or 0)
+        y = float(data.get('y') or 0)
+        width = float(data.get('width') or 0)
+        height = float(data.get('height') or 0)
+        points = [x, y, x + width, y, x + width, y + height, x, y + height]
     return {
         'id': ann.id,
         'type': ann_type,
         'label_id': ann.class_label_id,
         'label': ann.class_label.name,
         'color': getattr(ann.class_label, 'color', None) or '#40e020',
-        'points': data.get('points', []),
+        'points': points,
         'occluded': data.get('occluded', False),
         'attributes': [],
     }
@@ -87,6 +94,7 @@ def browser_payload(dataset: Dataset) -> dict:
             'height': m.height or 0,
             'annotations': frame_annotations,
             'augmented': is_augmented(m),
+            'split': (m.metadata or {}).get('split'),
         })
 
     return {

@@ -60,6 +60,15 @@ class ProjectViewSet(viewsets.ModelViewSet):
         if self.action in ['create', 'update', 'partial_update']:
             return ProjectCreateSerializer
         return ProjectSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        project = serializer.instance
+        output = ProjectSerializer(project, context={'request': request})
+        headers = self.get_success_headers(output.data)
+        return Response(output.data, status=status.HTTP_201_CREATED, headers=headers)
     
     def perform_create(self, serializer):
         """Set owner and give the project its backing collaboration team."""

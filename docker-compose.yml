@@ -25,11 +25,13 @@ services:
   worker:
     build: .
     restart: unless-stopped
-    command: celery -A visiox worker -l info
+    command: celery -A visiox worker -l info -Q celery,datasets
     volumes:
       - .:/app
     env_file:
       - .env
+    environment:
+      TRAINING_AGENT_URL: ${TRAINING_AGENT_URL:-http://host.docker.internal:8002}
 
   beat:
     build: .
