@@ -59,7 +59,7 @@ services:
   worker-datasets:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.worker
     restart: unless-stopped
     command: >
       celery -A visiox worker

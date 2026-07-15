@@ -125,7 +125,7 @@ Tạo `/opt/visiox/.dockerignore` nếu chưa có:
 .gitignore
 .env
 .env.*
-!.env.example
+!env.example
 
 venv
 .venv
@@ -138,8 +138,8 @@ media
 node_modules
 ```
 
-Dockerfile hiện có `COPY . .`; vì vậy bước này bắt buộc để `.env.worker` không bị
-ghi vào image layer.
+`Dockerfile.worker` có `COPY . .`; vì vậy bước này bắt buộc để `.env.worker` không
+bị ghi vào image layer.
 
 ## 6. Tạo environment riêng cho dataset worker
 
@@ -193,7 +193,7 @@ Thêm service sau dưới `services:`:
   worker-datasets:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.worker
     restart: unless-stopped
     command: >
       celery -A visiox worker
@@ -297,6 +297,14 @@ Log mong đợi:
 Connected to redis://redis:6379/0
 dataset-worker@... ready.
 ```
+
+Xác nhận worker không chạy bằng root:
+
+```bash
+docker compose -f docker-compose.infra.yml exec worker-datasets id
+```
+
+Kết quả phải có `uid=10001(visiox)` và không phải `uid=0(root)`.
 
 Danh sách queue phải có `datasets`.
 
@@ -432,6 +440,7 @@ docker compose -f docker-compose.infra.yml exec worker-datasets \
 - [ ] Source trên `.9` đã commit và push.
 - [ ] Source trên `.20` đúng branch và commit.
 - [ ] `.dockerignore` loại trừ `.env*`.
+- [ ] Worker chạy bằng user `visiox` với UID `10001`, không phải root.
 - [ ] `.env.worker` không còn placeholder và có permission `600`.
 - [ ] PostgreSQL, Redis và MinIO healthy.
 - [ ] Migration `0014_datasetimportjob` đã áp dụng.
@@ -440,4 +449,3 @@ docker compose -f docker-compose.infra.yml exec worker-datasets \
 - [ ] Worker `.9` chỉ nghe queue `celery`.
 - [ ] Upload thử nghiệm hoàn thành và staging được dọn.
 - [ ] Credentials đã được rotate nếu từng xuất hiện trong log/chat.
-
