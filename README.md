@@ -54,21 +54,6 @@ Never commit `.env`, `.env.worker`, database passwords, Django `SECRET_KEY`,
 MinIO credentials or agent tokens. Use a MinIO service account rather than the
 root account.
 
-The current shared-service endpoints are:
-
-```env
-DATABASE_HOST=10.29.30.20
-DATABASE_PORT=5432
-CELERY_BROKER_URL=redis://10.29.30.20:6379/0
-CELERY_RESULT_BACKEND=redis://10.29.30.20:6379/0
-USE_MINIO=True
-MINIO_ENDPOINT=http://10.29.30.20:9000
-MINIO_BUCKET=visiox-media
-```
-
-Use `db`, `redis` and `minio` instead of IP addresses only from containers on
-the `.20` Compose network.
-
 ## Run the API locally
 
 ```bash
@@ -113,60 +98,16 @@ docker compose ps
 docker compose logs -f worker
 ```
 
-The general worker command is equivalent to:
-
-```bash
-celery -A visiox worker -l info \
-  -Q celery \
-  --concurrency=2 \
-  --prefetch-multiplier=1 \
-  --hostname=general-worker@%h
-```
-
 ## Manage infrastructure and dataset worker on `.20`
 
-Use the existing Compose project name so commands target the running stack:
+Use the existing Compose project name so commands target the running stack.
+The full deployment, verification and rollback procedure is in
+[docs/DEPLOY_DATASET_WORKER_MINIO.md](docs/DEPLOY_DATASET_WORKER_MINIO.md).
 
 ```bash
 docker compose -p infiniq -f docker-compose.infra.yml ps
 docker compose -p infiniq -f docker-compose.infra.yml logs -f worker-datasets
-docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets id
 ```
-
-Expected worker identity:
-
-```text
-uid=10001(visiox) gid=10001(visiox)
-```
-
-Before recreating a worker, confirm it has no active task:
-
-```bash
-docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets \
-  celery -A visiox inspect active
-```
-
-Then rebuild and recreate only the dataset worker. Do not restart PostgreSQL,
-Redis or MinIO:
-
-```bash
-docker compose -p infiniq -f docker-compose.infra.yml build worker-datasets
-docker compose -p infiniq -f docker-compose.infra.yml up -d \
-  --no-deps --force-recreate worker-datasets
-```
-
-Inspect all queues without a hardcoded Celery hostname:
-
-```bash
-docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets \
-  celery -A visiox inspect active_queues
-```
-
-Expected routing:
-
-- `general-worker@...` -> `celery`
-- `dataset-worker@...` -> `datasets`
-- GPU worker -> `gpu_training`
 
 ## Dataset imports
 
@@ -229,7 +170,6 @@ The second command must run on `.20` where `.env.worker` exists.
 - [Dataset worker deployment](docs/DEPLOY_DATASET_WORKER_MINIO.md)
 - [Augmentation and scaling](docs/AUGMENTATION_AND_SCALING.md)
 - [Training and GPU agent](docs/TRAIN.md)
-- [Roadmap](docs/ROADMAP.md)
 
 ## Frontend pairing
 

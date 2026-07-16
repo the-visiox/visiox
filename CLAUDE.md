@@ -1,15 +1,4 @@
 # Repository guidance
 
-Use [AGENTS.md](AGENTS.md) as the canonical contributor and agent guide for this
-repository. Operational documentation lives under [docs/](docs/).
-
-Current deployment references:
-
-- [README.md](README.md): runtime topology and common commands
-- [docs/DEPLOY_DATASET_WORKER_MINIO.md](docs/DEPLOY_DATASET_WORKER_MINIO.md):
-  dataset worker deployment on `10.29.30.20`
-- [docs/STORAGE.md](docs/STORAGE.md): MinIO buckets and object paths
-- [docs/ARCHITECTURE_DIAGRAMS.md](docs/ARCHITECTURE_DIAGRAMS.md): system diagrams
-
-Do not place credentials, `.env` content, access tokens or production secrets in
-documentation.
+Use [AGENTS.md](AGENTS.md) as the canonical repository guide. User and
+operational documentation starts at [README.md](README.md).

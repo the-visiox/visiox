@@ -4,26 +4,12 @@ Tài liệu này hướng dẫn chạy Celery worker dành riêng cho queue `dat
 `10.29.30.20`, nơi đang chạy PostgreSQL, Redis và MinIO. Django API và frontend
 tiếp tục chạy trên máy `10.29.30.9`.
 
-## Trạng thái đã xác nhận
-
-Lần triển khai được xác nhận gần nhất dùng source commit
-`38bec9cb3518bf8065cfd8b1ad67eee563be287b`:
-
-- `dataset-worker@...` chạy bằng `uid=10001(visiox)`, queue `datasets`,
-  concurrency `1`, prefetch `1`.
-- `general-worker@...` chạy bằng `uid=10001(visiox)`, queue `celery`,
-  concurrency `2`, prefetch `1`.
-- GPU worker chỉ nghe `gpu_training`.
-- PostgreSQL, Redis và MinIO healthy và không cần restart khi recreate worker.
-- Image worker không chứa `.env*`.
-
-Celery hostname chứa container ID và sẽ đổi sau mỗi lần recreate. Không lưu cố
-định hostname như `dataset-worker@cdee62496736` trong script; dùng `inspect`
-không có `--destination`, hoặc lấy hostname hiện tại từ kết quả `inspect ping`.
-
 Hạ tầng `.20` đang thuộc Compose project `infiniq`. Tất cả lệnh trong tài liệu
 này dùng `-p infiniq`; thiếu tham số này có thể báo
 `service "worker-datasets" is not running` dù container vẫn hoạt động.
+
+Celery hostname chứa container ID và thay đổi sau khi recreate. Không hardcode
+hostname trong script; dùng `inspect` không có `--destination`.
 
 ## 1. Kiến trúc mục tiêu
 

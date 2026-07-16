@@ -1,12 +1,8 @@
-# Training Platform & GPU Agent Plan
+# Training and GPU Agent Integration
 
-This document defines the training direction for VisioX with a dedicated GPU machine on the LAN.
-
-```text
-GPU server: 192.168.210.26
-Training Agent: http://192.168.210.26:8002
-Inference API: future service, use another free port when enabled
-```
+This document defines the active contract between Django and the dedicated GPU
+training and inference agents. Endpoint values belong in environment files; the
+examples below describe the current LAN deployment only.
 
 The core decision is: **Django is the control plane** and **the GPU machine is the execution plane**. Django owns authentication, permissions, job state, dataset packaging, metrics, and the model registry. The GPU Agent owns CUDA/PyTorch/Ultralytics execution.
 
@@ -133,54 +129,16 @@ Important rule: write annotations to PostgreSQL first, then sync MinIO after com
 
 ---
 
-## Sync Modes
+## Label Cache Lifecycle
 
-### Mode A — Per-job snapshot only (current behavior)
+Verification and split changes warm YOLO labels under
+`training-cache/datasets/{dataset_id}/revisions/{revision}/...`. Cancelling
+verification or changing raw annotations invalidates that derived cache. When a
+job starts, Django promotes the ready revision into the immutable
+`training-jobs/{job_id}/labels/...` snapshot.
 
-- On `PATCH /api/v1/training-jobs/{id}/ {"status":"queued"}`, Django reads PostgreSQL and renders `training-jobs/{job_id}/labels/...`.
-- Simple and correct.
-- Slower when datasets are large because export cost is paid at job start.
-
-### Mode B — Dataset cache + per-job freeze (current behavior)
-
-- On verify and split, Django refreshes `training-cache/datasets/{dataset_id}/revisions/{dataset_revision}/...` in the background.
-- On unverify or raw annotation change, Django clears `training-cache/datasets/{dataset_id}/`.
-- When training starts, Django promotes the ready revision into `training-jobs/{job_id}/labels/...` as an immutable job snapshot.
-- This preserves reproducibility while removing most of the waiting time.
-
-Mode B is the preferred production design because it gives both:
-
-- fast startup from prebuilt label files, and
-- immutable per-job training evidence for debugging/reproducibility.
-
----
-
-## Current State
-
-| Area | Current status | Notes |
-| --- | --- | --- |
-| Training DB models | `ModelArchitecture`, `TrainingJob`, `Experiment`, `RunMetric` exist | Enough for job lifecycle and metrics |
-| Training API | `/api/v1/architectures/`, `/api/v1/training-jobs/`, `/api/v1/experiments/` exist | Keep this public contract stable |
-| Frontend | Train page can create/start jobs and poll metrics | Existing UI expects `queued`, `running`, `completed`, `failed`, `cancelled` |
-| Celery task | Mock runner emits fake metrics | Replace with orchestration, not local GPU training |
-| Dataset label cache | Verify/split can warm YOLO labels in `training-cache/...`; training promotes cache into job snapshots | Cache is derived from PostgreSQL and cleared when verification is cancelled or raw annotations change |
-| Dataset export | COCO/YOLO/VOC/mask/keypoints exist | User download exports stay separate from train-ready cache/snapshots |
-| Artifacts | `ModelRegistry.model_file` exists | Use it for `best.pt`; `best.onnx` can be added later |
-| Backend DL deps | No PyTorch/Ultralytics | Keep backend lightweight |
-
----
-
-## MVP Scope
-
-MVP includes:
-
-- YOLOv8, YOLOv9, YOLOv10, YOLOv11, and YOLO26 detection on a remote GPU agent
-- YOLO-compatible train-ready dataset payload
-- `best.pt`, `metrics.json`, and `training_log.json`
-- automatic `ModelRegistry` creation
-- compatibility with the existing `TrainingJob`, `Experiment`, and `RunMetric` frontend/API contract
-
-Later phases may add `best.onnx`, RT-DETR, Faster R-CNN, DETR, TensorRT export, Triton, and multi-GPU scheduling. TensorRT is intentionally outside MVP because it depends on the deployment runtime.
+PostgreSQL remains authoritative. MinIO cache and snapshot objects are derived
+delivery formats and must never become the annotation UI's source of truth.
 
 ---
 
@@ -289,8 +247,7 @@ stateDiagram-v2
     running --> completed: Agent complete callback
     running --> failed: Agent failed callback / timeout
     queued --> cancelled: PATCH status=cancelled
-    running --> cancelling: PATCH status=cancelled
-    cancelling --> cancelled: DELETE /v1/train/{job_id} accepted
+    running --> cancelled: PATCH status=cancelled
 
     completed --> [*]
     failed --> [*]
@@ -301,7 +258,6 @@ Implementation notes:
 
 - `queued`: user has started the job, but worker/agent may not have accepted it yet.
 - `running`: backend has created an `Experiment` and the GPU Agent has accepted the job.
-- `cancelling`: optional phase after MVP. MVP may set `cancelled` immediately after calling the agent cancel endpoint.
 - `failed`: always set `error_message` so the frontend can show a useful reason.
 
 ---
@@ -439,7 +395,8 @@ Content-Type: application/json
 
 Cancel checks `training.stop_job` and asks the GPU Agent to stop the matching job.
 
-There is no public cache-management endpoint in the MVP. Cache refresh/clear is intentionally driven by verified dataset state and raw annotation changes.
+There is no public cache-management endpoint. Cache refresh and invalidation are
+driven by verified dataset state and raw annotation changes.
 
 ---
 
@@ -1042,164 +999,14 @@ Model registry metadata example:
 
 ---
 
-## Backend Structure
 
-```text
-training/
-|-- orchestrator/
-|   |-- split_manifest.py
-|   |-- gpu_agent_client.py
-|   |-- artifact_manager.py
-|   `-- callbacks.py
-|-- registry.py
-|-- tasks.py
-|-- models.py
-|-- serializers/
-|   `-- training_serializer.py
-|-- views/
-|   |-- training_view.py
-|   `-- internal_view.py
-`-- urls.py
-```
+## Label with Model
 
-Responsibilities:
-
-- `split_manifest.py`: build train/val/test manifests from media metadata without moving MinIO objects.
-- `gpu_agent_client.py`: call `POST /v1/train`, `GET`, `DELETE`.
-- `artifact_manager.py`: create presigned artifact upload URLs and registry entries.
-- `callbacks.py`: validate internal callback token and write metrics/status.
-- `tasks.py`: orchestrate only; do not import PyTorch or Ultralytics.
-
----
-
-## GPU Training Agent Structure
-
-```text
-gpu-training-agent/
-|-- Dockerfile
-|-- main.py
-|-- config.py
-|-- requirements.txt
-|-- runners/
-|   |-- base.py
-|   |-- yolo_v8.py
-|   |-- yolo_v9.py
-|   |-- yolo_v10.py
-|   `-- yolo_v11.py
-|-- callbacks/
-|   |-- client.py
-|   `-- metrics.py
-`-- exporters/
-    |-- onnx.py
-    `-- artifacts.py
-```
-
-MVP outputs:
-
-```text
-best.pt
-best.onnx
-metrics.json
-training_log.json
-confusion_matrix.png
-```
-
-`best.pt`, `metrics.json`, and `training_log.json` are required for a successful MVP run. `best.onnx` and `confusion_matrix.png` are optional, but the agent should upload them whenever the trainer produces them.
-
-### Training Agent Implementation Checklist
-
-The agent must execute each accepted job in this order:
-
-1. Validate the request, create an isolated work directory, and return `202` with `stage=preparing`.
-2. Download the dataset manifest and referenced media/label objects.
-3. Send a setup metrics callback immediately so the UI can move beyond the initial `12%` state.
-4. Train the selected model and send one metrics callback after every epoch.
-5. Send a heartbeat while downloading, training, exporting, or uploading. A 15-30 second interval is recommended.
-6. Generate final metrics, locate the confusion-matrix image already produced by the trainer, then upload artifacts with HTTP `PUT` to the provided presigned URLs.
-7. Send the completed callback only after required uploads succeed.
-8. On any exception, send the failed callback with a useful message and clean up the local work directory.
-
-Minimal callback helper:
-
-```python
-import requests
-
-
-def send_callback(url: str, token: str, payload: dict) -> None:
-    response = requests.post(
-        url,
-        json=payload,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=15,
-    )
-    response.raise_for_status()
-```
-
-Minimal epoch reporting logic:
-
-```python
-progress = min(95, 15 + round(((epoch + 1) / total_epochs) * 80, 1))
-
-send_callback(callbacks["metrics_url"], callback_token, {
-    "epoch": epoch + 1,
-    "step": global_step,
-    "loss": train_loss,
-    "val_loss": val_loss,
-    "map50": map50,
-    "map75": map75,
-    "precision": precision,
-    "recall": recall,
-    "f1": f1,
-    "learning_rate": learning_rate,
-    "eta_seconds": eta_seconds,
-    "gpu_memory_mb": gpu_memory_mb,
-    "progress_percent": progress,
-    "total_epochs": total_epochs,
-})
-```
-
-Presigned artifact uploads must use `PUT` and must not include the callback Bearer token:
-
-```python
-def upload_artifact(upload_url: str, local_path: str) -> None:
-    with open(local_path, "rb") as artifact:
-        response = requests.put(upload_url, data=artifact, timeout=300)
-    response.raise_for_status()
-```
-
-Do not send the completion callback while uploads are still running. For cancellation, terminate the trainer process, stop future callbacks/uploads, remove the work directory, and return a cancelled state from `GET /v1/train/{id}`.
-
-Artifact download:
-
-- Django stores artifact metadata on `TrainingJob.artifacts`.
-- Frontend receives presigned artifact links in `TrainingJob.artifact_urls`.
-- `best.pt` is the primary weights download link.
-- `ModelRegistry.artifact_url` also points to the registered model file when available.
-
-Expected response fields:
-
-```json
-{
-  "artifact_urls": {
-    "best.pt": "http://minio-or-presigned-url/...",
-    "best.onnx": "http://minio-or-presigned-url/...",
-    "metrics.json": "http://minio-or-presigned-url/...",
-    "training_log.json": "http://minio-or-presigned-url/...",
-    "confusion_matrix.png": "http://minio-or-presigned-url/..."
-  }
-}
-```
-
----
-
-## Inference On Image Browser
-
-The Dataset Image Browser can run a trained model on original images and overlay predictions next to existing annotations.
-
-Frontend calls Django:
+The Dataset Image Browser persists model predictions as annotations through
+Django:
 
 ```http
-POST /api/v1/registry/{model_registry_id}/predict-dataset/
+POST /api/v1/registry/{model_registry_id}/label-dataset/
 Content-Type: application/json
 
 {
@@ -1209,97 +1016,23 @@ Content-Type: application/json
 }
 ```
 
-Django proxies to the inference server configured by:
+Django calls the configured Inference Agent, validates every returned media and
+class, replaces earlier labels from the same model, and keeps manual
+annotations. The frontend refreshes the browser after the annotations are
+committed. The lower-level `predict-dataset` endpoint remains available for API
+clients that need unsaved predictions; it is not a separate browser mode.
 
-```env
-INFERENCE_API_URL=http://192.168.210.26:8003
-```
-
-Django sends the inference server:
-
-```json
-{
-  "model": {
-    "registry_id": 6,
-    "name": "test2",
-    "version": "1.0.22",
-    "format": "pytorch",
-    "storage_key": "training-jobs/22/artifacts/best.pt"
-  },
-  "dataset": {
-    "id": 26,
-    "media_ids": [101, 102, 103]
-  },
-  "confidence": 0.25
-}
-```
-
-The Inference Agent resolves each image through Django instead of querying the
-database directly:
+The agent resolves media through the protected metadata endpoint:
 
 ```http
-GET /api/v1/media/101/
+GET /api/v1/media/{media_id}/
 Authorization: Bearer <INFERENCE_AGENT_TOKEN>
 ```
 
-```json
-{
-  "id": 101,
-  "media_id": 101,
-  "dataset_id": 26,
-  "project_id": 23,
-  "type": "image",
-  "filename": "frame_00491.jpg",
-  "width": 1920,
-  "height": 1080,
-  "bucket": "visiox-media",
-  "storage_key": "users/1_user/projects/23_project/datasets/26_dataset/v1/raw/frame_00491.jpg",
-  "object_key": "users/1_user/projects/23_project/datasets/26_dataset/v1/raw/frame_00491.jpg",
-  "key": "users/1_user/projects/23_project/datasets/26_dataset/v1/raw/frame_00491.jpg",
-  "content_type": "image/jpeg"
-}
-```
-
-`storage_key`, `object_key`, and `key` are aliases for compatibility with
-different Inference Agent builds. This endpoint accepts the machine token or a
-normal user JWT with access to the media project. It never returns MinIO access
-or secret keys.
-
-Inference server response:
-
-```json
-{
-  "dataset": 26,
-  "model": 6,
-  "predictions": [
-    {
-      "media_id": 101,
-      "label": "person",
-      "label_id": 1,
-      "confidence": 0.91,
-      "bbox": [320, 120, 180, 460],
-      "bbox_format": "xywh",
-      "normalized": false,
-      "color": "#f97316"
-    }
-  ],
-  "summary": {
-    "total_images": 3,
-    "predicted_images": 3,
-    "total_predictions": 8,
-    "latency_ms": 431
-  }
-}
-```
-
-Prediction box rules:
-
-- `bbox_format="xywh"` means `[x, y, width, height]`.
-- `bbox_format="xyxy"` means `[x1, y1, x2, y2]`.
-- `normalized=true` means coordinates are `0..1` and frontend scales them by image width/height.
-- Predictions are rendered with dashed outlines.
-- Saved annotations are rendered with solid outlines.
-- Image Browser provides independent show/hide toggles for annotation labels and prediction labels.
+The response supplies the dataset ID, dimensions, bucket and object key but
+never MinIO credentials. Prediction boxes use `xywh` or `xyxy`; coordinates
+may be pixels or normalized values. See [API.md](API.md) for the complete
+request and response schemas.
 
 ---
 
@@ -1365,7 +1098,7 @@ CUDA_VISIBLE_DEVICES=0
 AGENT_AUTH_TOKEN=<shared-agent-token>
 ```
 
-Inference API, future phase:
+Inference Agent:
 
 ```env
 HOST=0.0.0.0
@@ -1383,52 +1116,6 @@ is reachable from that container rather than its own loopback interface.
 
 ---
 
-## Implementation Roadmap
-
-### Phase 0 - Contract cleanup
-
-- Fix any training docs/API references that still miss `/api/v1/`.
-- Fix cancel permission to use `training.stop_job`.
-- Make frontend refresh jobs while status is `queued` as well as `running`.
-- Seed `ModelArchitecture` rows for `YOLOv8 Detection`, `YOLOv9 Detection`, `YOLOv10 Detection`, and `YOLOv11 Detection`.
-
-### Phase 1 - Backend orchestration
-
-- Add split manifest construction for `visiox-media` object keys.
-- Render PostgreSQL annotations into dataset-level YOLO label cache after verify/split.
-- Promote dataset cache into immutable per-job YOLO label snapshots when training starts.
-- Clear dataset label cache when verification is cancelled or raw annotations change.
-- Add dataset revision metadata so training can reuse a warm label cache instead of rebuilding every file at job start.
-- Add internal callback endpoints for metrics, complete, failed, heartbeat.
-- Add `GPUAgentClient`.
-- Replace mock `run_training_job` with orchestration.
-- Create `ModelRegistry` entries on successful complete callback.
-- Validate hyperparameters: `epochs`, `batch_size`, `lr`, `imgsz`, `seed`.
-
-### Phase 2 - GPU Training Agent
-
-- Implement FastAPI service with `POST /v1/train`, `GET /v1/train/{id}`, `DELETE /v1/train/{id}`.
-- Implement `YOLOv8Trainer`, `YOLOv26Trainer`, and compatible runners for the supported YOLO versions.
-- Report setup metrics immediately and training metrics after each epoch; send heartbeat every 15-30 seconds.
-- Upload `best.pt`, `metrics.json`, `training_log.json`, and `confusion_matrix.png`; export `best.onnx` only if stable.
-- Support safe cancellation and workdir cleanup.
-- Build CUDA Docker image for `192.168.210.26`.
-
-### Phase 3 - Registry and UX
-
-- Show trained model artifacts in the deployment/registry UI.
-- Add download links for model files.
-- Add deploy action from a trained model.
-- Store duration, framework version, dataset hash, and best metrics in `ModelRegistry.metrics`.
-
-### Phase 4 - Inference server
-
-- Implement FastAPI inference service on a port that does not conflict with the Training Agent.
-- Load model from artifact storage or local cache.
-- Set `InferenceEndpoint.endpoint_url`.
-- Log predictions back to backend for monitoring.
-
----
 
 ## Risks
 
@@ -1445,17 +1132,3 @@ is reachable from that container rather than its own loopback interface.
 | Reproducibility is weak | Store seed, dataset hash, architecture version, framework version |
 
 ---
-
-## MVP Done Criteria
-
-MVP is complete when:
-
-1. User creates a training job from the frontend.
-2. Backend queues the job and Celery orchestration starts.
-3. Backend sends a train/val/test manifest using existing `visiox-media` object keys.
-4. Backend builds or reuses a verified dataset label cache and promotes it into per-job YOLO label snapshots in MinIO.
-5. GPU Agent on `192.168.210.26` builds a local YOLO workspace and trains the selected architecture.
-6. Setup and per-epoch metrics are written to `RunMetric`, progress moves beyond `12%`, and live values are visible from the frontend.
-7. `best.pt`, `metrics.json`, and `training_log.json` are uploaded; `best.onnx` and `confusion_matrix.png` are exposed when generated.
-8. Backend creates a `ModelRegistry` entry for `best.pt`.
-9. `TrainingJob.status` becomes `completed`.
