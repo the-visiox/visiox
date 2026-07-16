@@ -14,7 +14,6 @@ from rest_framework.response import Response
 
 from annotations.colors import class_color_for_index
 from annotations.models import Annotation, Class
-from core.permissions import HasPerm
 from core.access import project_access_q
 from deployments.models import ModelRegistry, InferenceEndpoint, MonitoringLog, DriftAlert
 from deployments.serializers import (
@@ -340,9 +339,6 @@ class InferenceEndpointViewSet(viewsets.ModelViewSet):
             log.is_flagged = True
             log.flagged_reason = 'below_threshold'
             log.save(update_fields=['is_flagged', 'flagged_reason'])
-
-            from annotations.models import LabelingTask
-            from datasets.models import Media
 
         return Response(MonitoringLogSerializer(log).data, status=status.HTTP_201_CREATED)
 

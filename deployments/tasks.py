@@ -13,7 +13,6 @@ def check_endpoint_drift(endpoint_id: int):
     Low-confidence predictions are flagged back to the annotation queue.
     """
     from deployments.models import InferenceEndpoint, MonitoringLog, DriftAlert
-    from annotations.models import LabelingTask
 
     try:
         endpoint = InferenceEndpoint.objects.get(pk=endpoint_id)

@@ -242,12 +242,6 @@ def _make_thumbnail_bytes(image_bytes: bytes, max_size: int = 400, quality: int 
     return buf.getvalue()
 
 
-def _media_name_exists(dataset: Dataset, name: str) -> bool:
-    if not name:
-        return False
-    return dataset.media_files.filter(original_filename=name).exists()
-
-
 def _existing_media_names_in_dataset(dataset: Dataset, names: list[str]) -> set[str]:
     return set(dataset.media_files.filter(original_filename__in=names).values_list('original_filename', flat=True))
 

@@ -2,14 +2,9 @@
 
 import mimetypes
 
-from django.conf import settings
 from django.db.models import Prefetch
 
 from datasets.models import Dataset, Media
-
-
-def standalone_enabled() -> bool:
-    return bool(getattr(settings, 'VISIOX_STANDALONE', False))
 
 
 def ordered_image_media(dataset: Dataset):
@@ -103,26 +98,6 @@ def browser_payload(dataset: Dataset) -> dict:
         'labels': list(labels_map.values()),
         'frames': frames,
         'annotation_count': total_annotation_count,
-    }
-
-
-def synthetic_cvat_stats(dataset: Dataset) -> dict:
-    from annotations.models import Annotation
-
-    n = ordered_image_media(dataset).count()
-    ann_count = Annotation.objects.filter(
-        media__dataset=dataset, is_valid=True
-    ).count()
-    return {
-        'exists': True,
-        'task_id': 0,
-        'name': dataset.name,
-        'status': 'standalone',
-        'size': n,
-        'mode': 'annotation',
-        'dimension': '2d',
-        'jobs': [],
-        'annotations': {'shapes': ann_count, 'tags': 0, 'tracks': 0, 'total': ann_count},
     }
 
 

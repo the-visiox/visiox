@@ -13,12 +13,10 @@ class StripeService:
     @staticmethod
     def get_or_create_customer(team, email: str) -> str:
         from billing.models import Subscription
-        try:
-            sub = Subscription.objects.get(team=team)
-            if sub.stripe_customer_id:
-                return sub.stripe_customer_id
-        except Subscription.DoesNotExist:
-            pass
+
+        subscription = Subscription.objects.filter(team=team).first()
+        if subscription and subscription.stripe_customer_id:
+            return subscription.stripe_customer_id
 
         customer = stripe.Customer.create(
             email=email,

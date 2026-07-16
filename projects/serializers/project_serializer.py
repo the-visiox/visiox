@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from projects.models import Project
-from teams.models import Team
 
 
 class ProjectSerializer(serializers.ModelSerializer):

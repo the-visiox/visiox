@@ -8,7 +8,6 @@ from django.utils import timezone
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 
-from core.permissions import HasPerm
 from core.access import project_access_q
 from training.models import ModelArchitecture, TrainingJob, Experiment, RunMetric
 from training.serializers import (
