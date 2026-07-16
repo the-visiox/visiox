@@ -23,6 +23,7 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 
 from core.jwt_query_auth import JWTAuthQueryOrHeader
 
+from annotations.colors import class_color_for_index
 from annotations.models import Annotation, Class
 from annotations.serializers import AnnotationSerializer, JobAnnotationsReplaceSerializer
 from core.permissions import HasPerm
@@ -548,28 +549,8 @@ def _clamp_float(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
-YOLO_CLASS_COLOR_PALETTE = (
-    '#22c55e',
-    '#38bdf8',
-    '#3b82f6',
-    '#6366f1',
-    '#8b5cf6',
-    '#a855f7',
-    '#d946ef',
-    '#ec4899',
-    '#f43f5e',
-    '#ef4444',
-    '#f97316',
-    '#f59e0b',
-    '#eab308',
-    '#84cc16',
-    '#14b8a6',
-    '#64748b',
-)
-
-
 def _yolo_class_color(index: int) -> str:
-    return YOLO_CLASS_COLOR_PALETTE[index % len(YOLO_CLASS_COLOR_PALETTE)]
+    return class_color_for_index(index)
 
 
 def _yolo_class_index_offset(class_ids: set[int], class_count: int) -> int:

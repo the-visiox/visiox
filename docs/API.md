@@ -1428,6 +1428,37 @@ Roll back to the previous version.
 
 ---
 
+### POST `/api/v1/registry/{id}/predict-dataset/`
+Run a registered model through the configured inference agent and return preview
+predictions without changing annotations.
+
+```json
+{
+  "dataset": 32,
+  "media_ids": [4546, 4545],
+  "confidence": 0.25
+}
+```
+
+### POST `/api/v1/registry/{id}/label-dataset/`
+Run inference and persist predictions as bounding-box annotations. Existing
+manual annotations are preserved. Re-running the same registry model replaces
+only annotations previously created by that model for the requested images.
+
+```json
+{
+  "dataset": 32,
+  "media_ids": [4546, 4545],
+  "confidence": 0.25
+}
+```
+
+If `media_ids` is omitted, all original images in the dataset are processed.
+The response reports `processed_images`, `labeled_images`, `saved_annotations`,
+and `skipped_predictions`.
+
+---
+
 ### GET `/api/v1/endpoints/`
 Get list of inference endpoints.
 
