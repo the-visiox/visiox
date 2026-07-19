@@ -1159,7 +1159,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         if self.action == 'destroy':
             return [HasPerm('datasets.delete_dataset')]
-        if self.action in ('upload', 'upload_batch', 'import_archive', 'start_import'):
+        if self.action in ('upload', 'upload_batch', 'import_archive', 'start_import', 'delete_frame'):
             return [HasPerm('datasets.upload_media')]
         if self.action == 'verify':
             return [HasPerm('annotations.approve_annotation')]
@@ -1542,7 +1542,8 @@ class DatasetViewSet(viewsets.ModelViewSet):
         })
 
     @action(detail=True, methods=['get'], url_path=r'frames/(?P<frame_num>\d+)',
-            authentication_classes=[JWTAuthQueryOrHeader], permission_classes=[IsAuthenticated])
+            authentication_classes=[JWTAuthQueryOrHeader], permission_classes=[IsAuthenticated],
+            throttle_classes=[])
     def frame_image(self, request, pk=None, frame_num=None):
         query_token = request.query_params.get('token')
         if query_token:
@@ -1602,8 +1603,41 @@ class DatasetViewSet(viewsets.ModelViewSet):
         response['Cache-Control'] = 'public, max-age=3600'
         return response
 
+    @action(
+        detail=True,
+        methods=['delete'],
+        url_path=r'frames/(?P<frame_num>\d+)/delete',
+        throttle_classes=[],
+    )
+    def delete_frame(self, request, pk=None, frame_num=None):
+        dataset = self.get_object()
+        try:
+            frame_index = int(frame_num)
+        except (TypeError, ValueError):
+            return Response({'detail': 'Invalid frame.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        media = image_media_for_frame(dataset, frame_index)
+        if media is None:
+            return Response(
+                {'detail': f'Frame {frame_index} not found in dataset {dataset.id}.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        media_id = media.id
+        with transaction.atomic():
+            media.delete()
+            dataset.invalidate_training_verification()
+            transaction.on_commit(lambda dataset_id=dataset.id: _enqueue_dataset_label_cache_clear(dataset_id))
+
+        return Response({
+            'deleted': 1,
+            'media_id': media_id,
+            'frame': frame_index,
+            'remaining': ordered_image_media(dataset).count(),
+        })
+
     @action(detail=True, methods=['get', 'put'],
-            url_path=r'frames/(?P<frame_num>\d+)/annotations')
+            url_path=r'frames/(?P<frame_num>\d+)/annotations', throttle_classes=[])
     def frame_annotations(self, request, pk=None, frame_num=None):
         dataset = self.get_object()
         media = image_media_for_frame(dataset, int(frame_num))

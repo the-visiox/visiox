@@ -326,3 +326,47 @@ def promote_dataset_cache_to_job(job) -> dict:
         'job_prefix': job_prefix,
         'job_label_keys': job_label_keys,
     }
+
+
+def promote_datasets_cache_to_job(job, datasets) -> dict:
+    """Create one immutable label snapshot from multiple verified datasets."""
+    job_prefix = f'training-jobs/{job.id}'
+    labels_prefix = f'{job_prefix}/labels'
+    _delete_prefix(labels_prefix)
+
+    combined_manifest = {split: [] for split in SPLITS}
+    seen_image_keys = {split: set() for split in SPLITS}
+    job_label_keys = []
+    source_revisions = []
+
+    for dataset in datasets:
+        cache_metadata = build_dataset_label_cache(dataset)
+        source_revisions.append({
+            'dataset_id': dataset.id,
+            'revision': cache_metadata['revision'],
+        })
+        for split, items in cache_metadata['manifest'].items():
+            for item in items:
+                if item['key'] in seen_image_keys[split]:
+                    continue
+                seen_image_keys[split].add(item['key'])
+                combined_item = dict(item)
+                combined_item['source_dataset_id'] = dataset.id
+                combined_item['filename'] = f'{dataset.id}_{item["filename"]}'
+                combined_manifest[split].append(combined_item)
+
+        for cache_key in cache_metadata['labels']:
+            relative = cache_key.split('/labels/', 1)[1]
+            split, filename = relative.split('/', 1)
+            job_key = f'{labels_prefix}/{split}/{dataset.id}_{filename}'
+            _copy_key(cache_key, job_key)
+            job_label_keys.append(job_key)
+
+    return {
+        'ready': True,
+        'job_prefix': job_prefix,
+        'job_label_keys': job_label_keys,
+        'manifest': combined_manifest,
+        'counts': {split: len(items) for split, items in combined_manifest.items()},
+        'sources': source_revisions,
+    }

@@ -24,6 +24,7 @@ from deployments.serializers import (
 )
 from deployments.tasks import check_endpoint_drift
 from datasets.models import Dataset, Media
+from datasets.standalone import image_media_for_frame
 
 
 class InferenceAgentError(Exception):
@@ -121,6 +122,37 @@ def _prediction_annotation_data(prediction: dict, media: Media) -> dict | None:
     }
 
 
+def _prediction_preview(result: dict, media: Media, classes) -> tuple[list[dict], list[str], int]:
+    class_by_name = {item.name.strip().casefold(): item for item in classes}
+    predictions = []
+    unmapped_labels = set()
+    skipped = 0
+    for prediction in result.get('predictions', []):
+        try:
+            prediction_media_id = int(prediction.get('media_id'))
+        except (TypeError, ValueError):
+            skipped += 1
+            continue
+        if prediction_media_id != media.id:
+            continue
+        label = str(prediction.get('label') or '').strip()
+        box_data = _prediction_annotation_data(prediction, media)
+        if not label or box_data is None:
+            skipped += 1
+            continue
+        class_obj = class_by_name.get(label.casefold())
+        if class_obj is None:
+            unmapped_labels.add(label)
+        predictions.append({
+            'type': 'bbox',
+            'label': label,
+            'class_label': class_obj.id if class_obj else None,
+            'confidence': prediction.get('confidence'),
+            'data': box_data,
+        })
+    return predictions, sorted(unmapped_labels), skipped
+
+
 class ModelRegistryViewSet(viewsets.ModelViewSet):
     serializer_class = ModelRegistrySerializer
     queryset = ModelRegistry.objects.none()
@@ -173,6 +205,48 @@ class ModelRegistryViewSet(viewsets.ModelViewSet):
         except InferenceAgentError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(result)
+
+    @extend_schema(responses={200: dict})
+    @action(detail=True, methods=['post'], url_path='preview-frame')
+    def preview_frame(self, request, pk=None):
+        entry = self.get_object()
+        dataset = Dataset.objects.filter(
+            project_access_q(request.user, 'project__'),
+            pk=request.data.get('dataset'),
+        ).select_related('project').first()
+        if not dataset:
+            return Response({'error': 'Dataset not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if entry.training_job_id and entry.training_job.project_id != dataset.project_id:
+            return Response(
+                {'error': 'The selected model and dataset must belong to the same project.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            frame = int(request.data.get('frame'))
+            confidence = _inference_confidence(request.data.get('confidence'))
+        except (TypeError, ValueError) as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        media = image_media_for_frame(dataset, frame)
+        if media is None:
+            return Response({'error': 'Frame not found.'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            result = _request_dataset_predictions(entry, dataset, [media.id], confidence)
+        except InferenceAgentError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        classes = Class.objects.filter(project=dataset.project).order_by('id')
+        predictions, unmapped_labels, skipped = _prediction_preview(result, media, classes)
+        return Response({
+            'dataset': dataset.id,
+            'model': entry.id,
+            'model_name': entry.name,
+            'model_version': entry.version,
+            'frame': frame,
+            'media_id': media.id,
+            'predictions': predictions,
+            'unmapped_labels': unmapped_labels,
+            'skipped_predictions': skipped,
+            'summary': result.get('summary') or {},
+        })
 
     @extend_schema(responses={200: dict})
     @action(detail=True, methods=['post'], url_path='label-dataset')

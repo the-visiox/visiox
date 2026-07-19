@@ -101,6 +101,13 @@ The dataset cache is replaceable. Per-job label snapshots are immutable inputs
 for that training run. GPU agents must use the manifest/split payload rather
 than infer splits from canonical media folder names.
 
+A completed run's `artifacts/best.pt` may also be the immutable initialization
+input for a later fine-tuning run. Django records the parent run and registry
+entry in PostgreSQL and sends the GPU Agent a time-limited presigned GET URL;
+raw MinIO credentials are never included in the job payload. This is not an
+exact resume checkpoint: supporting interrupted-run resume later requires
+retaining `last.pt` and its optimizer/epoch state.
+
 ## Django configuration
 
 Use placeholders in documentation and service-account credentials in real

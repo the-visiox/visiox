@@ -134,4 +134,5 @@ before rebuilding or recreating the remote dataset worker.
 - [docs/STORAGE.md](docs/STORAGE.md): MinIO policy and paths.
 - [docs/AUGMENTATION_AND_SCALING.md](docs/AUGMENTATION_AND_SCALING.md): background dataset work.
 - [docs/TRAIN.md](docs/TRAIN.md): training and inference agent contracts.
+- [docs/AUTO_LABEL_ANNOTATION.md](docs/AUTO_LABEL_ANNOTATION.md): annotation Auto Label specification.
 - [docs/DEPLOY_DATASET_WORKER_MINIO.md](docs/DEPLOY_DATASET_WORKER_MINIO.md): `.20` runbook.

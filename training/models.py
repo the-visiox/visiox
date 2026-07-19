@@ -28,6 +28,10 @@ class ModelArchitecture(models.Model):
 
 
 class TrainingJob(models.Model):
+    INITIALIZATION_CHOICES = [
+        ('architecture', 'Architecture checkpoint'),
+        ('fine_tune', 'Fine-tune from registered model'),
+    ]
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('queued', 'Queued'),
@@ -39,7 +43,19 @@ class TrainingJob(models.Model):
 
     project = models.ForeignKey('projects.Project', on_delete=models.CASCADE, related_name='training_jobs')
     dataset = models.ForeignKey('datasets.Dataset', on_delete=models.SET_NULL, null=True, related_name='training_jobs')
+    dataset_ids = models.JSONField(default=list, blank=True)
     architecture = models.ForeignKey(ModelArchitecture, on_delete=models.SET_NULL, null=True)
+    parent_job = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='child_jobs'
+    )
+    base_model = models.ForeignKey(
+        'deployments.ModelRegistry', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='fine_tuning_jobs',
+    )
+    initialization_mode = models.CharField(
+        max_length=32, choices=INITIALIZATION_CHOICES, default='architecture'
+    )
+    class_schema = models.JSONField(default=list, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
     name = models.CharField(max_length=255)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='pending')
@@ -65,6 +81,13 @@ class TrainingJob(models.Model):
 
     def __str__(self):
         return f"{self.name} [{self.status}]"
+
+    def selected_datasets(self):
+        from datasets.models import Dataset
+
+        ids = list(dict.fromkeys(self.dataset_ids or ([self.dataset_id] if self.dataset_id else [])))
+        rows = {item.id: item for item in Dataset.objects.filter(id__in=ids).select_related('project')}
+        return [rows[dataset_id] for dataset_id in ids if dataset_id in rows]
 
 
 class Experiment(models.Model):

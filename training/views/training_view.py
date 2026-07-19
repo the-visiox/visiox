@@ -227,7 +227,9 @@ class TrainingJobViewSet(viewsets.ModelViewSet):
         user = self.request.user
         return TrainingJob.objects.filter(
             project_access_q(user, 'project__')
-        ).distinct().select_related('architecture', 'created_by', 'project', 'dataset')
+        ).distinct().select_related(
+            'architecture', 'created_by', 'project', 'dataset', 'parent_job', 'base_model'
+        )
 
     def partial_update(self, request, *args, **kwargs):
         job = self.get_object()

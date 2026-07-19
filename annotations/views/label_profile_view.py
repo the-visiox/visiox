@@ -66,6 +66,8 @@ class MediaLabelProfileView(APIView):
 class DatasetFrameLabelProfileView(APIView):
     """GET/PUT label roster for a dataset frame (native mode) — resolves to underlying ``Media``."""
 
+    throttle_classes = []
+
     @extend_schema(responses={200: LabelProfileWriteSerializer})
     def get(self, request, dataset_id, frame_num):
         dataset = _dataset_for_user(request, dataset_id)

@@ -117,7 +117,7 @@ Sync flow:
 2. `POST /api/v1/datasets/{id}/split/` writes train/val/test metadata and enqueues cache refresh.
 3. Raw annotation saves invalidate verification and enqueue cache clear.
 4. `DELETE /api/v1/datasets/{id}/verify/` un-verifies the dataset, deletes generated augmented media, and enqueues cache clear.
-5. `PATCH /api/v1/training-jobs/{id}/ {"status":"queued"}` promotes the current dataset cache into `training-jobs/{job_id}/labels/...` before calling the GPU Agent.
+5. `PATCH /api/v1/training-jobs/{id}/ {"status":"queued"}` promotes the cache for every selected dataset into one immutable `training-jobs/{job_id}/labels/...` snapshot before calling the GPU Agent.
 
 Why this model:
 
@@ -232,6 +232,33 @@ sequenceDiagram
     API->>DB: Create ModelRegistry, status=completed
     UI->>API: Refresh job and registry
 ```
+
+### Continue training from a completed run
+
+The Train UI exposes **Continue Training** after a run has completed and its
+`best.pt` has been registered. This creates a new, independent `TrainingJob`;
+it does not modify the completed run.
+
+```text
+completed TrainingJob -> ModelRegistry(best.pt) -> new fine_tune TrainingJob
+```
+
+The child run stores `parent_job`, `base_model`, `initialization_mode`, and an
+ordered `class_schema` snapshot. Django accepts the source only when it is a
+PyTorch artifact from a completed run in the same project, with the same
+architecture and compatible classes. Dataset selection and hyperparameters
+belong to the new run and can be changed before starting.
+
+This is **fine-tuning**, not an exact interrupted-run resume. Exact resume also
+requires `last.pt` with optimizer, scheduler, scaler, and epoch state; the
+current artifact contract only guarantees `best.pt`.
+
+The completed-run **Try Model** action opens the native annotation workspace in
+comparison mode. Ground-truth annotations remain solid and editable; model
+predictions are fetched one frame at a time from
+`POST /api/v1/registry/{id}/preview-frame/` and rendered as non-interactive
+dashed boxes with confidence scores. Prediction overlays never enter the save
+payload.
 
 ---
 
@@ -382,7 +409,10 @@ Content-Type: application/json
 {"status": "queued"}
 ```
 
-Side effect: Django promotes the latest dataset cache revision into `training-jobs/{job_id}/labels/...` before sending `POST /v1/train` to the GPU Agent. If the cache is absent or stale, Django rebuilds it synchronously from PostgreSQL and then promotes it.
+Side effect: Django promotes the latest cache revision for every id in
+`dataset_ids` into `training-jobs/{job_id}/labels/...`, merges their logical
+train/validation/test manifests, then sends one `POST /v1/train` request to the
+GPU Agent. If a cache is absent or stale, Django rebuilds it synchronously.
 
 Cancel job:
 
@@ -500,6 +530,17 @@ Payload:
     }
   },
   "architecture": "yolov8",
+  "initial_checkpoint": {
+    "mode": "fine_tune",
+    "format": "pytorch",
+    "storage_key": "training-jobs/41/artifacts/best.pt",
+    "download_url": "https://minio.local/visiox-artifacts/training-jobs/41/artifacts/best.pt?...",
+    "source_training_job_id": 41,
+    "source_registry_id": 17,
+    "class_schema": [
+      {"id": 1, "name": "person"}
+    ]
+  },
   "hyperparameters": {
     "epochs": 100,
     "batch": 16,
@@ -523,6 +564,14 @@ Payload:
   "callback_token": "short-lived-token"
 }
 ```
+
+`initial_checkpoint` is omitted for normal architecture runs. For fine-tuning,
+the GPU Agent must download `download_url` to a temporary/cache path and pass
+that local `.pt` path to Ultralytics (for example `YOLO(checkpoint_path)`) before
+calling `train`. The URL is a time-limited presigned GET URL; MinIO credentials
+must not be added to the payload. A GPU Agent version that does not recognize
+this optional object must reject the job clearly rather than silently starting
+from architecture weights.
 
 Important: train/val/test is a logical split stored in PostgreSQL media metadata and sent in this payload. The MinIO `visiox-media` object paths stay unchanged under `raw/` and `augmented/`; the GPU Agent must use `dataset.splits` or `dataset.manifest`, not folder names, to decide where each image belongs in the local training workspace. Label files under `training-jobs/{job_id}/labels/` are immutable snapshots for that job only. Django may generate those files by promoting the warm dataset cache from `training-cache/datasets/{dataset_id}/revisions/{dataset_revision}/`, but the GPU Agent does not need to know or read the cache prefix directly.
 

@@ -170,6 +170,7 @@ The second command must run on `.20` where `.env.worker` exists.
 - [Dataset worker deployment](docs/DEPLOY_DATASET_WORKER_MINIO.md)
 - [Augmentation and scaling](docs/AUGMENTATION_AND_SCALING.md)
 - [Training and GPU agent](docs/TRAIN.md)
+- [Annotation Auto Label](docs/AUTO_LABEL_ANNOTATION.md)
 
 ## Frontend pairing
 

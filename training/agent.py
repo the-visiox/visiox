@@ -6,7 +6,11 @@ import boto3
 from django.conf import settings
 from botocore.client import Config
 from core.storage import get_artifacts_storage
-from training.label_cache import build_dataset_split_manifest, promote_dataset_cache_to_job
+from training.label_cache import (
+    build_dataset_split_manifest,
+    promote_dataset_cache_to_job,
+    promote_datasets_cache_to_job,
+)
 
 
 SUPPORTED_ARCHITECTURES = {'yolov8', 'yolov9', 'yolov10', 'yolov11', 'yolo26'}
@@ -56,12 +60,28 @@ def _artifact_upload_urls(job_id):
     }
 
 
+def _artifact_download_url(storage_key):
+    client = boto3.client(
+        's3', endpoint_url=_agent_minio_endpoint(),
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        region_name=settings.AWS_S3_REGION_NAME,
+        config=Config(signature_version='s3v4', s3={'addressing_style': settings.AWS_S3_ADDRESSING_STYLE}),
+    )
+    return client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': 'visiox-artifacts', 'Key': storage_key},
+        ExpiresIn=86400,
+    )
+
+
 def _label_snapshot_prefix(job):
     return f'training-jobs/{job.id}/labels'
 
 
 def build_training_request(job):
-    if not job.dataset_id:
+    selected_datasets = job.selected_datasets()
+    if not selected_datasets:
         raise TrainingAgentError('A dataset is required for GPU training.')
     if not job.architecture_id:
         raise TrainingAgentError('A model architecture is required for GPU training.')
@@ -70,31 +90,46 @@ def build_training_request(job):
     if not getattr(settings, 'USE_MINIO', False):
         raise TrainingAgentError('GPU training currently requires USE_MINIO=True.')
 
-    try:
-        split_manifest, test_dataset_id = build_dataset_split_manifest(job.dataset)
-    except RuntimeError as exc:
-        raise TrainingAgentError(str(exc)) from exc
-    split_keys = {
-        split: [item['key'] for item in items]
-        for split, items in split_manifest.items()
-    }
-
     class_rows = list(job.project.classes.order_by('id').values('id', 'name'))
     class_names = [item['name'] for item in class_rows]
     if not class_names:
         raise TrainingAgentError('The selected project has no annotation classes.')
     label_delivery = getattr(settings, 'TRAINING_LABEL_DELIVERY', getattr(settings, 'TRAINING_LABEL_SOURCE', 'minio'))
     label_keys = []
+    test_dataset_ids = []
     if label_delivery == 'minio':
         try:
-            promoted = promote_dataset_cache_to_job(job)
+            promoted = (
+                promote_dataset_cache_to_job(job)
+                if len(selected_datasets) == 1
+                else promote_datasets_cache_to_job(job, selected_datasets)
+            )
         except RuntimeError as exc:
             raise TrainingAgentError(str(exc)) from exc
         label_keys = promoted['job_label_keys']
+        split_manifest = promoted['manifest']
+        if promoted.get('test_dataset_id'):
+            test_dataset_ids.append(promoted['test_dataset_id'])
     elif label_delivery != 'postgres':
         raise TrainingAgentError(
             f'Unsupported TRAINING_LABEL_DELIVERY "{label_delivery}". Use "minio" or "postgres".'
         )
+    else:
+        split_manifest = {'train': [], 'val': [], 'test': []}
+        try:
+            for dataset in selected_datasets:
+                dataset_manifest, test_dataset_id = build_dataset_split_manifest(dataset)
+                for split, items in dataset_manifest.items():
+                    split_manifest[split].extend(items)
+                if test_dataset_id:
+                    test_dataset_ids.append(test_dataset_id)
+        except RuntimeError as exc:
+            raise TrainingAgentError(str(exc)) from exc
+
+    split_keys = {
+        split: list(dict.fromkeys(item['key'] for item in items))
+        for split, items in split_manifest.items()
+    }
 
     base = settings.TRAINING_CALLBACK_BASE_URL
     callback_root = f'{base}/api/v1/internal/training-jobs/{job.id}'
@@ -103,7 +138,7 @@ def build_training_request(job):
     if 'batch_size' in hyperparams and 'batch' not in hyperparams:
         hyperparams['batch'] = hyperparams.pop('batch_size')
 
-    return {
+    payload = {
         'job_id': job.id,
         'dataset': {
             'storage': 'minio',
@@ -114,7 +149,12 @@ def build_training_request(job):
             'splits': split_keys,
             'manifest': split_manifest,
             'counts': {split: len(items) for split, items in split_manifest.items()},
-            'split_config': job.dataset.split_config,
+            'split_config': {
+                'datasets': [
+                    {'dataset_id': dataset.id, 'config': dataset.split_config}
+                    for dataset in selected_datasets
+                ],
+            },
             'label_source': label_delivery,
             'label_source_of_truth': LABEL_SOURCE_OF_TRUTH,
             'label_snapshot': {
@@ -127,7 +167,9 @@ def build_training_request(job):
             },
             'labels': label_keys,
             'dataset_id': job.dataset_id,
-            'test_dataset_id': test_dataset_id,
+            'dataset_ids': [dataset.id for dataset in selected_datasets],
+            'test_dataset_id': test_dataset_ids[0] if len(test_dataset_ids) == 1 else None,
+            'test_dataset_ids': list(dict.fromkeys(test_dataset_ids)),
             'class_names': class_names,
         },
         'architecture': _architecture_name(job),
@@ -147,6 +189,22 @@ def build_training_request(job):
         },
         'callback_token': settings.TRAINING_CALLBACK_TOKEN,
     }
+    if job.initialization_mode == 'fine_tune':
+        base_model = job.base_model
+        parent_job = job.parent_job
+        if base_model is None or parent_job is None or not base_model.model_file:
+            raise TrainingAgentError('The fine-tuning checkpoint is no longer available.')
+        storage_key = base_model.model_file.name
+        payload['initial_checkpoint'] = {
+            'mode': 'fine_tune',
+            'format': 'pytorch',
+            'storage_key': storage_key,
+            'download_url': _artifact_download_url(storage_key),
+            'source_training_job_id': parent_job.id,
+            'source_registry_id': base_model.id,
+            'class_schema': job.class_schema,
+        }
+    return payload
 
 
 def submit_training_job(job):

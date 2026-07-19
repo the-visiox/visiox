@@ -20,6 +20,7 @@ noted. `→` marks a foreign key and its `on_delete` behaviour.
 | annotations | `classes`, `annotations`, `labeling_tasks`, `job_issues`, `reviews` |
 | training | `model_architectures`, `training_jobs`, `experiments`, `run_metrics` |
 | deployments | `model_registry`, `inference_endpoints`, `monitoring_logs`, `drift_alerts` |
+| auto_label | `auto_label_models`, `auto_label_dataset_jobs` |
 | billing | `plans`, `subscriptions`, `usage_records`, `api_keys`, `webhooks` |
 | dataverse | `dataverse_projects` |
 
@@ -276,6 +277,35 @@ Persistent state for asynchronous image, YOLO26 and COCO imports.
 | loss, val_loss, map50, map75, f1, accuracy | double | nullable |
 | extra | jsonb | |
 | recorded_at | timestamptz | |
+
+---
+
+## auto_label
+
+### `auto_label_models`
+
+Project-scoped models imported specifically for annotation-time Auto Label.
+These are separate from trained/deployed `model_registry` records.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| project_id | bigint | Project ownership and access scope |
+| name, version | varchar | User-facing model identity |
+| family, framework | varchar | Adapter metadata; defaults to YOLO/Ultralytics |
+| task_type | varchar | `object_detection` or `instance_segmentation` |
+| capabilities, class_names | jsonb | Supported outputs and optional model class list |
+| model_file | varchar | Artifact storage key; never returned by the API |
+| file_size | bigint | Uploaded artifact size |
+| checksum | varchar(64) | SHA-256 of the uploaded file |
+| status, validation_error | varchar/text | Import readiness state |
+| created_by_id | bigint | Importing user; nullable after user deletion |
+| created_at, updated_at | timestamptz | Audit timestamps |
+
+### `auto_label_dataset_jobs`
+
+Tracks queued/running dataset-wide Auto Label progress and result counts. Each
+job belongs to one dataset and imported model and stores `total`, `done`,
+`labeled_images`, `saved_annotations`, `skipped_predictions`, status, and error.
 
 ---
 

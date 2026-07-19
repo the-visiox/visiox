@@ -665,6 +665,22 @@ Get the image for a frame by index (0-based).
 
 ---
 
+### DELETE `/api/v1/datasets/{id}/frames/{frame_num}/delete/`
+Permanently delete the 0-based frame, its stored image/thumbnail, and its annotations.
+Requires the `datasets.upload_media` permission.
+
+**Response `200`:**
+```json
+{
+  "deleted": 1,
+  "media_id": 123,
+  "frame": 4,
+  "remaining": 168
+}
+```
+
+---
+
 ### GET `/api/v1/datasets/{id}/frames/{frame_num}/annotations/`
 Get annotations for a frame.
 
@@ -1216,6 +1232,56 @@ Request revision.
 
 ---
 
+### Auto Label
+
+Auto Label is independent from **Run Model**. Run Model uses trained
+`ModelRegistry` artifacts; Auto Label uses a project-scoped imported model or a
+provider such as YOLO World and returns editable drafts for the current frame.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET`, `POST` | `/api/v1/auto-label/models/` | List/import project Auto Label models (`multipart/form-data`) |
+| `DELETE` | `/api/v1/auto-label/models/{id}/` | Remove an imported model and its artifact |
+| `GET` | `/api/v1/auto-label/providers/` | List provider capabilities and model variants |
+| `POST` | `/api/v1/datasets/{dataset_id}/frames/{frame_num}/predict/` | Predict editable bbox/polygon drafts for one frame |
+| `POST` | `/api/v1/datasets/{dataset_id}/auto-label/` | Queue Auto Label for every dataset image |
+| `GET` | `/api/v1/datasets/{dataset_id}/auto-label/jobs/{job_id}/` | Read dataset job progress and result counts |
+
+Imported model prediction source:
+
+```json
+{
+  "source": {"kind": "uploaded_model", "model_id": 12},
+  "output_type": "bbox",
+  "confidence": 0.25,
+  "create_missing_classes": false
+}
+```
+
+YOLO World prediction source:
+
+```json
+{
+  "source": {
+    "kind": "provider",
+    "provider": "yolo_world",
+    "model": "yolov8s-worldv2",
+    "prompts": ["person", "forklift", "pallet"]
+  },
+  "output_type": "bbox",
+  "confidence": 0.25,
+  "create_missing_classes": false
+}
+```
+
+The frame prediction endpoint does not save annotations. The dataset Auto Label
+endpoint runs in the `datasets` worker, saves model annotations in batches, maps
+only existing project classes, replaces previous output from the same imported
+model, and preserves manual annotations. YOLO World currently advertises bbox
+output only.
+
+---
+
 ## 6. Training
 
 ### GET `/api/v1/architectures/`
@@ -1267,8 +1333,15 @@ Get list of training jobs.
     "id": 1,
     "project": 1,
     "dataset": 1,
+    "dataset_ids": [1, 2, 3],
     "architecture": 1,
     "architecture_name": "YOLOv8",
+    "initialization_mode": "architecture | fine_tune",
+    "parent_job": null,
+    "parent_job_name": null,
+    "base_model": null,
+    "base_model_name": null,
+    "class_schema": [{ "id": 1, "name": "person" }],
     "created_by": 1,
     "created_by_username": "string",
     "name": "Training Run #1",
@@ -1295,12 +1368,26 @@ Create a new training job.
 {
   "project": 1,
   "dataset": 1,
+  "dataset_ids": [1, 2, 3],
   "architecture": 1,
+  "initialization_mode": "fine_tune",
+  "base_model": 17,
   "name": "string",
   "hyperparams": { "epochs": 100, "lr": 0.001 },
   "augmentation_config": {}
 }
 ```
+
+`dataset_ids` accepts one or more verified, generated datasets from the same
+project. `dataset` remains the first selected dataset for backward compatibility.
+The training payload combines each dataset's train/validation/test split.
+
+Set `initialization_mode` to `fine_tune` and pass a `base_model` registry ID to
+start from a previous run's `best.pt`. The source registry entry must be
+PyTorch, belong to a completed run in the same project, use the same
+architecture, and have a compatible ordered class schema. Django derives
+`parent_job`; clients cannot set it directly. Omit both fields, or use
+`initialization_mode: "architecture"`, for a normal run.
 
 **Response `201`:** TrainingJob object
 
@@ -1439,6 +1526,24 @@ predictions without changing annotations.
   "confidence": 0.25
 }
 ```
+
+### POST `/api/v1/registry/{id}/preview-frame/`
+Run inference for exactly one dataset frame and return canvas-ready bounding
+boxes without saving annotations. The Train page uses this endpoint for **Try
+Model** comparison mode.
+
+```json
+{
+  "dataset": 32,
+  "frame": 0,
+  "confidence": 0.25
+}
+```
+
+The response maps prediction label names to existing project class IDs. Unknown
+labels are reported in `unmapped_labels` and are not drawn as ground truth.
+Predictions are read-only overlays; saving the annotation editor does not
+persist them.
 
 ### POST `/api/v1/registry/{id}/label-dataset/`
 Run inference and persist predictions as bounding-box annotations. Existing

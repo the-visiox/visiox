@@ -5,6 +5,7 @@ from django.test import SimpleTestCase
 from deployments.views.deployment_view import (
     _inference_confidence,
     _prediction_annotation_data,
+    _prediction_preview,
 )
 
 
@@ -38,3 +39,23 @@ class ModelLabelingHelperTests(SimpleTestCase):
         self.assertEqual(_inference_confidence('0.4'), 0.4)
         with self.assertRaisesRegex(ValueError, 'between 0 and 1'):
             _inference_confidence(1.1)
+
+    def test_prediction_preview_maps_project_class_without_saving(self):
+        self.media.id = 12
+        classes = [SimpleNamespace(id=7, name='person')]
+
+        predictions, unmapped, skipped = _prediction_preview({
+            'predictions': [{
+                'media_id': 12,
+                'label': 'Person',
+                'confidence': 0.91,
+                'bbox': [100, 50, 40, 20],
+                'bbox_format': 'xywh',
+                'normalized': False,
+            }],
+        }, self.media, classes)
+
+        self.assertEqual(predictions[0]['class_label'], 7)
+        self.assertEqual(predictions[0]['data'], {'x': 80.0, 'y': 40.0, 'width': 40.0, 'height': 20.0})
+        self.assertEqual(unmapped, [])
+        self.assertEqual(skipped, 0)

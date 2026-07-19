@@ -23,6 +23,7 @@ urlpatterns = [
     # Phase 3–5
     path('api/v1/', include('training.urls')),
     path('api/v1/', include('deployments.urls')),
+    path('api/v1/', include('auto_label.urls')),
     path('api/v1/', include('billing.urls')),
 
     # OpenAPI
