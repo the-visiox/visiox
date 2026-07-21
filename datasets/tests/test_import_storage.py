@@ -19,6 +19,13 @@ from datasets.views.dataset_view import (
     _yolo_class_color,
     _yolo_class_index_offset,
 )
+from datasets.services.video_extraction import (
+    Candidate,
+    build_timestamps,
+    descriptor_distance,
+    normalize_video_extraction_config,
+    select_diverse_candidates,
+)
 
 
 class _FakeFieldFile:
@@ -49,6 +56,35 @@ class _FakeMedia:
 
 
 class DatasetImportStorageTests(SimpleTestCase):
+    def test_video_extraction_config_uses_safe_defaults(self):
+        config = normalize_video_extraction_config({'enabled': True, 'target': 120})
+
+        self.assertEqual(config, {'enabled': True, 'target': 120})
+
+    def test_video_extraction_config_rejects_invalid_target(self):
+        with self.assertRaisesRegex(ValueError, 'target'):
+            normalize_video_extraction_config({'enabled': True, 'target': 0})
+
+    def test_video_timestamps_cover_each_target_bin(self):
+        timestamps = build_timestamps(duration=100.0, target=5, candidates_per_target=3)
+
+        self.assertEqual(len(timestamps), 15)
+        self.assertEqual({bin_index for _, bin_index in timestamps}, set(range(5)))
+        self.assertTrue(all(0 <= timestamp < 100 for timestamp, _ in timestamps))
+
+    def test_video_selection_prefers_best_diverse_candidate_per_bin(self):
+        candidates = [
+            Candidate(1.0, 0, (1.0, 0.0), 100, 100, 0.4),
+            Candidate(2.0, 0, (0.0, 1.0), 100, 100, 0.9),
+            Candidate(7.0, 1, (0.0, 1.0), 100, 100, 0.9),
+            Candidate(8.0, 1, (-1.0, 0.0), 100, 100, 0.7),
+        ]
+
+        selected = select_diverse_candidates(candidates, target=2)
+
+        self.assertEqual([candidate.timestamp for candidate in selected], [2.0, 8.0])
+        self.assertGreater(descriptor_distance((1.0, 0.0), (-1.0, 0.0)), 0.9)
+
     def test_multipart_parser_accepts_169_image_files(self):
         self.assertGreaterEqual(settings.DATA_UPLOAD_MAX_NUMBER_FILES, 500)
         files = [

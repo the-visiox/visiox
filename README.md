@@ -69,12 +69,6 @@ python manage.py setup_groups
 python manage.py runserver 0.0.0.0:8000
 ```
 
-Optional demo data:
-
-```bash
-python manage.py seed_demo_data
-```
-
 Useful URLs:
 
 - API base: `http://localhost:8000/api/v1/`

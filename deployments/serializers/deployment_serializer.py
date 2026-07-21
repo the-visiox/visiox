@@ -20,7 +20,8 @@ class ModelRegistrySerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_by', 'file_size', 'created_at', 'updated_at']
 
     def get_endpoint_count(self, obj) -> int:
-        return obj.endpoints.count()
+        annotated_count = getattr(obj, 'endpoint_count_value', None)
+        return annotated_count if annotated_count is not None else obj.endpoints.count()
 
     def get_artifact_url(self, obj) -> str | None:
         if not obj.model_file:

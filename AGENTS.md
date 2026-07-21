@@ -1,7 +1,7 @@
 # VisioX Backend — Agent Guide
 
 Django REST backend for VisioX. It pairs with the sibling Next.js repository
-`visiox-ui`; the customized `cvat` repository is optional.
+`visiox-ui` and provides the native annotation workflow.
 
 ## Quick reference
 
@@ -70,11 +70,12 @@ Do not duplicate those references here.
 - Training execution uses the configured GPU workflow/queue.
 - Never expose MinIO credentials to the frontend.
 
-### CVAT
+### Annotation
 
-- CVAT integration is isolated in `datasets/services/cvat.py`.
-- Set `VISIOX_STANDALONE=true` for native annotation without CVAT.
-- Preserve standalone behavior when changing dataset or annotation flows.
+- Dataset browsing and frame delivery use stored `Media` through
+  `datasets/services/media_browser.py`.
+- Preserve local-filesystem and MinIO behavior when changing dataset or
+  annotation flows.
 
 ## Environment configuration
 
@@ -89,7 +90,7 @@ dataset worker. Important groups are:
 - Dataset import: `DATASET_IMPORT_STORAGE_WORKERS`,
   `DATASET_IMPORT_BATCH_SIZE`.
 - GPU agents: `TRAINING_*`, `INFERENCE_*`.
-- Optional integrations: `CVAT_*`, OAuth, Stripe and email variables.
+- Optional integrations: OAuth, Stripe and email variables.
 
 The templates and settings module are canonical; update them together when a
 new environment variable is introduced.

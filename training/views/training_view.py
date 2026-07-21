@@ -4,6 +4,7 @@ from rest_framework.decorators import action
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.db import transaction
+from django.db.models import Count
 from django.utils import timezone
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
@@ -12,7 +13,8 @@ from core.access import project_access_q
 from training.models import ModelArchitecture, TrainingJob, Experiment, RunMetric
 from training.serializers import (
     ModelArchitectureSerializer,
-    TrainingJobSerializer,
+    TrainingJobDetailSerializer,
+    TrainingJobListSerializer,
     ExperimentSerializer,
     RunMetricSerializer,
     KNOWN_TRAINING_ARTIFACTS,
@@ -213,6 +215,13 @@ class ModelArchitectureViewSet(viewsets.ModelViewSet):
     serializer_class = ModelArchitectureSerializer
     queryset = ModelArchitecture.objects.all()
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        include_inactive = self.request.query_params.get('include_inactive', '').lower() in ('1', 'true', 'yes')
+        if self.action == 'list' and not include_inactive:
+            queryset = queryset.filter(is_active=True)
+        return queryset
+
     def get_permissions(self):
         if self.action in ('create', 'update', 'partial_update', 'destroy'):
             return [IsAdminUser()]
@@ -220,13 +229,20 @@ class ModelArchitectureViewSet(viewsets.ModelViewSet):
 
 
 class TrainingJobViewSet(viewsets.ModelViewSet):
-    serializer_class = TrainingJobSerializer
+    serializer_class = TrainingJobDetailSerializer
     queryset = TrainingJob.objects.none()
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return TrainingJobListSerializer
+        return TrainingJobDetailSerializer
 
     def get_queryset(self):
         user = self.request.user
         return TrainingJob.objects.filter(
             project_access_q(user, 'project__')
+        ).annotate(
+            experiment_count_value=Count('experiments', distinct=True),
         ).distinct().select_related(
             'architecture', 'created_by', 'project', 'dataset', 'parent_job', 'base_model'
         )
@@ -252,7 +268,7 @@ class TrainingJobViewSet(viewsets.ModelViewSet):
             task = run_training_job.delay(job.id)
             job.celery_task_id = task.id
             job.save(update_fields=['celery_task_id'])
-            return Response(TrainingJobSerializer(job).data)
+            return Response(self.get_serializer(job).data)
 
         if new_status == 'cancelled':
             if not request.user.has_perm('training.stop_job'):
@@ -264,7 +280,7 @@ class TrainingJobViewSet(viewsets.ModelViewSet):
             job.status = 'cancelled'
             job.finished_at = timezone.now()
             job.save(update_fields=['status', 'finished_at'])
-            return Response(TrainingJobSerializer(job).data)
+            return Response(self.get_serializer(job).data)
 
         return super().partial_update(request, *args, **kwargs)
 

@@ -184,6 +184,10 @@ DATASET_IMPORT_STORAGE_WORKERS=6
 DATASET_IMPORT_BATCH_SIZE=24
 ```
 
+Video frame extraction runs inside `worker-datasets` using OpenCV and NumPy.
+It compares color, layout, and edge descriptors and does not require a model,
+GPU, or separate ML checkpoint.
+
 Bảo vệ file:
 
 ```bash

@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-55!^nxpq^_oaw(-$+ey1ahk&l1zdh^jt#h9^g8duk3!ay0evt7')
 
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
+ENABLE_SILK = DEBUG and os.getenv('ENABLE_SILK', 'false').lower() in ('1', 'true', 'yes')
 
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
@@ -37,7 +38,6 @@ INSTALLED_APPS = [
     'deployments',
     'auto_label',
     'billing',
-    'silk',
     'corsheaders',
     'django_celery_beat',
 ]
@@ -51,8 +51,11 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'silk.middleware.SilkyMiddleware',
 ]
+
+if ENABLE_SILK:
+    INSTALLED_APPS.append('silk')
+    MIDDLEWARE.append('silk.middleware.SilkyMiddleware')
 
 ROOT_URLCONF = 'visiox.urls'
 

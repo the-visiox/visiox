@@ -162,7 +162,10 @@ def build_dataset_split_manifest(dataset):
 
 def dataset_cache_revision(dataset) -> str:
     latest_done_augmentation = (
-        dataset.augmentation_jobs.filter(status='done').order_by('-updated_at').values_list('updated_at', flat=True).first()
+        dataset.augmentation_jobs.filter(status='done')
+        .order_by('-updated_at')
+        .values_list('updated_at', flat=True)
+        .first()
     )
     payload = {
         'dataset_id': dataset.id,
@@ -170,7 +173,7 @@ def dataset_cache_revision(dataset) -> str:
         'split_updated_at': dataset.split_updated_at.isoformat() if dataset.split_updated_at else None,
         'split_config': dataset.split_config or {},
         'augmentation_updated_at': latest_done_augmentation.isoformat() if latest_done_augmentation else None,
-        'project_class_ids': list(dataset.project.classes.order_by('id').values_list('id', flat=True)),
+        'project_class_ids': list(dataset.project.classes.order_by('index', 'id').values_list('id', flat=True)),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
     return hashlib.sha1(encoded).hexdigest()[:16]
@@ -216,7 +219,11 @@ def _write_split_labels(prefix: str, split_manifest: dict, class_id_to_index: di
     for split, items in split_manifest.items():
         stem_counts = {}
         for item in items:
-            filename = item.get('filename') or PurePosixPath(item.get('key') or '').name or f'media_{item["media_id"]}.jpg'
+            filename = (
+                item.get('filename')
+                or PurePosixPath(item.get('key') or '').name
+                or f'media_{item["media_id"]}.jpg'
+            )
             stem = PurePosixPath(filename).stem or f'media_{item["media_id"]}'
             stem_counts[stem] = stem_counts.get(stem, 0) + 1
         for item in items:
@@ -255,7 +262,7 @@ def build_dataset_label_cache(dataset):
         raise DatasetLabelCacheNotReady('Dataset split is not configured.')
 
     split_manifest, test_dataset_id = build_dataset_split_manifest(dataset)
-    class_rows = list(dataset.project.classes.order_by('id').values('id', 'name'))
+    class_rows = list(dataset.project.classes.order_by('index', 'id').values('id', 'name'))
     class_names = [item['name'] for item in class_rows]
     if not class_names:
         raise DatasetLabelCacheNotReady('The selected project has no annotation classes.')

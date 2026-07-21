@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 
 from annotations.models import Class
 from datasets.models import Dataset, Media, MediaLabelProfile
-from datasets.standalone import image_media_for_frame
+from datasets.services.media_browser import image_media_for_frame
 
 
 class LabelItemSerializer(serializers.Serializer):

@@ -113,6 +113,8 @@ class MediaAnnotationsView(APIView):
             ])
             if (media.metadata or {}).get('category') != 'augmented':
                 media.dataset.invalidate_training_verification()
-                transaction.on_commit(lambda dataset_id=media.dataset_id: _enqueue_dataset_label_cache_clear(dataset_id))
+                transaction.on_commit(
+                    lambda dataset_id=media.dataset_id: _enqueue_dataset_label_cache_clear(dataset_id)
+                )
         qs = Annotation.objects.filter(media=media).select_related('class_label', 'annotator')
         return Response(AnnotationSerializer(qs, many=True).data)

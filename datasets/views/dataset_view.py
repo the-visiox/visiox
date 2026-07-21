@@ -1,3 +1,4 @@
+import json
 import logging
 import posixpath
 import uuid
@@ -36,12 +37,16 @@ from datasets.serializers import (
 )
 from django.http import HttpResponse
 
-from datasets.standalone import (
+from datasets.services.media_browser import (
     browser_payload,
     image_media_for_frame,
     guess_content_type,
     ordered_image_media,
     raw_image_media,
+)
+from datasets.services.video_extraction import (
+    normalize_video_extraction_config,
+    run_video_extraction_job,
 )
 
 logger = logging.getLogger(__name__)
@@ -708,6 +713,7 @@ def _queue_dataset_import_job(
     *,
     forced_media_type: str | None = None,
     replace_existing: bool = False,
+    import_options: dict | None = None,
 ) -> Response:
     job = DatasetImportJob.objects.create(
         dataset=dataset,
@@ -715,7 +721,7 @@ def _queue_dataset_import_job(
         status='queued',
         total=len(files),
         done=0,
-        summary={'replace_existing': replace_existing},
+        summary={'replace_existing': replace_existing, **(import_options or {})},
         created_by=request.user,
     )
 
@@ -835,7 +841,13 @@ def _import_staged_media_files(job: DatasetImportJob) -> dict:
     return {'format': 'images', 'files': created}
 
 
-def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_name: str, user, job: DatasetImportJob | None = None) -> dict:
+def _import_yolo26_archive_from_file(
+    dataset: Dataset,
+    archive_file,
+    archive_name: str,
+    user,
+    job: DatasetImportJob | None = None,
+) -> dict:
     try:
         archive = zipfile.ZipFile(archive_file)
     except zipfile.BadZipFile as exc:
@@ -843,7 +855,10 @@ def _import_yolo26_archive_from_file(dataset: Dataset, archive_file, archive_nam
 
     with archive:
         members = _zip_file_members(archive)
-        data_yaml_key = next((name for name in members if posixpath.basename(name).lower() in ('data.yaml', 'data.yml')), None)
+        data_yaml_key = next(
+            (name for name in members if posixpath.basename(name).lower() in ('data.yaml', 'data.yml')),
+            None,
+        )
         if not data_yaml_key:
             raise ValueError('YOLO26 ZIP must include data.yaml.')
 
@@ -1104,7 +1119,11 @@ def run_dataset_import_job(job_id: int) -> None:
 
     try:
         if job.format == 'images':
-            summary = _import_staged_media_files(job)
+            video_extraction = (job.summary or {}).get('video_extraction') or {}
+            if video_extraction.get('enabled'):
+                summary = run_video_extraction_job(job, video_extraction)
+            else:
+                summary = _import_staged_media_files(job)
         elif job.format == 'yolo26':
             staged = (job.staged_files or [])[0] if job.staged_files else None
             if not staged or not staged.get('key'):
@@ -1275,13 +1294,25 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             if test_dataset.id == dataset.id:
-                return Response({'error': 'Choose a different dataset for the fixed test set.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {'error': 'Choose a different dataset for the fixed test set.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             if test_dataset.verification_status != 'verified':
-                return Response({'error': 'Verify the fixed test dataset before using it.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {'error': 'Verify the fixed test dataset before using it.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         if sum(ratios.values()) != 100:
-            return Response({'error': 'Train, validation, and test ratios must total 100%.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Train, validation, and test ratios must total 100%.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if test_dataset and ratios['test'] != 0:
-            return Response({'error': 'Set Test to 0% when using a fixed test dataset.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Set Test to 0% when using a fixed test dataset.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if any(ratios[name] < 0 for name in ('train', 'val', 'test')):
             return Response(
                 {'error': 'Split ratios cannot be negative.'},
@@ -1333,7 +1364,13 @@ class DatasetViewSet(viewsets.ModelViewSet):
         uploaded_file = serializer.validated_data['file']
         media_type = serializer.validated_data['type']
         try:
-            _validate_dataset_import_files(dataset, 'images', [uploaded_file], forced_media_type=media_type, max_files=1)
+            _validate_dataset_import_files(
+                dataset,
+                'images',
+                [uploaded_file],
+                forced_media_type=media_type,
+                max_files=1,
+            )
         except ValueError as exc:
             detail = str(exc)
             status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
@@ -1385,8 +1422,33 @@ class DatasetViewSet(viewsets.ModelViewSet):
         import_format = request.data.get('format', 'images')
         replace_existing = str(request.data.get('replace_existing', '')).strip().lower() in ('1', 'true', 'yes', 'on')
         files = request.FILES.getlist('files') or ([request.FILES['file']] if 'file' in request.FILES else [])
+        import_options = {}
         try:
             _validate_dataset_import_files(dataset, import_format, files, max_files=500)
+            raw_video_extraction = request.data.get('video_extraction')
+            if raw_video_extraction:
+                if isinstance(raw_video_extraction, dict):
+                    parsed_video_extraction = raw_video_extraction
+                else:
+                    try:
+                        parsed_video_extraction = json.loads(raw_video_extraction)
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise ValueError('video_extraction must be valid JSON.') from exc
+                video_extraction = normalize_video_extraction_config(parsed_video_extraction)
+                if video_extraction.get('enabled'):
+                    if import_format != 'images':
+                        raise ValueError('Video extraction is only available for Images imports.')
+                    non_videos = [
+                        posixpath.basename(getattr(file_obj, 'name', '') or '')
+                        for file_obj in files
+                        if _infer_media_type(file_obj) != 'video'
+                    ]
+                    if non_videos:
+                        raise ValueError(
+                            'When video extraction is enabled, upload video files only. '
+                            f'Remove: {", ".join(non_videos[:10])}'
+                        )
+                    import_options['video_extraction'] = video_extraction
         except ValueError as exc:
             detail = str(exc)
             status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
@@ -1398,6 +1460,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
             files,
             import_format,
             replace_existing=replace_existing and import_format == 'yolo26',
+            import_options=import_options,
         )
 
     @action(
@@ -1453,16 +1516,25 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
         dataset = self.get_object()
         if not _verification_is_current(dataset):
-            return Response({'error': 'Verify Annotations before generating a preview.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Verify Annotations before generating a preview.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if not dataset.split_config:
-            return Response({'error': 'Configure the dataset split before augmentation.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Configure the dataset split before augmentation.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         data = request.data
         pre = data.get('preprocess', {})
         aug = data.get('augment', {})
         count = min(int(data.get('count', 6)), 12)
 
         pre_pipeline, aug_pipeline = _build_pipelines(pre, aug)
-        media_list = [media for media in raw_image_media(dataset) if (media.metadata or {}).get('split') == 'train'][:count]
+        media_list = [
+            media for media in raw_image_media(dataset)
+            if (media.metadata or {}).get('split') == 'train'
+        ][:count]
         previews = []
 
         for media in media_list:
@@ -1487,9 +1559,15 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
         dataset = self.get_object()
         if not _verification_is_current(dataset):
-            return Response({'error': 'Verify Annotations before generating a dataset.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Verify Annotations before generating a dataset.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if not dataset.split_config:
-            return Response({'error': 'Configure the dataset split before augmentation.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Configure the dataset split before augmentation.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         data = request.data
         pre = dict(data.get('preprocess', {}) or {})
         aug = dict(data.get('augment', {}) or {})

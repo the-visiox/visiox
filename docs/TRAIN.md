@@ -249,6 +249,11 @@ PyTorch artifact from a completed run in the same project, with the same
 architecture and compatible classes. Dataset selection and hyperparameters
 belong to the new run and can be changed before starting.
 
+Completed YOLO11/YOLO26 runs remain valid fine-tuning sources when their exact
+architecture row has since been retired from the new-run catalog. The Train UI
+loads inactive architecture metadata only to preserve that source checkpoint;
+inactive architectures are not offered for a new architecture-based run.
+
 This is **fine-tuning**, not an exact interrupted-run resume. Exact resume also
 requires `last.pt` with optimizer, scheduler, scaler, and epoch state; the
 current artifact contract only guarantees `best.pt`.
@@ -529,7 +534,8 @@ Payload:
       "strategy": "class"
     }
   },
-  "architecture": "yolov8",
+  "architecture": "yolo26",
+  "architecture_checkpoint": "yolo26s.pt",
   "initial_checkpoint": {
     "mode": "fine_tune",
     "format": "pytorch",
@@ -606,16 +612,19 @@ GET http://192.168.210.26:8002/v1/train/42
 Supported architecture values:
 
 ```text
-yolov8
-yolov9
 yolov10
 yolov11
 yolo26
 ```
 
-The backend should treat architecture as a versioned YOLO key and let the GPU Agent resolve the concrete runner. Add new YOLO versions by creating a `ModelArchitecture` row and a matching GPU Agent runner.
+`architecture` selects the runner family. `architecture_checkpoint` selects the
+exact Ultralytics weight (`n`, `s`, `m`, `l`, or `x`). The GPU Agent must pass
+that checkpoint to the runner instead of silently using a family-level default.
+YOLOv8 and YOLOv9 are no longer accepted for new jobs.
 
-If the agent returns `Unsupported architecture: yolo26`, the Django payload is already correct but the running GPU agent process is stale or missing the YOLO26 runner registry entry. Restart/redeploy the GPU agent build that includes `yolo26 -> YOLOv26Trainer -> yolo26n.pt`.
+If the agent returns `Unsupported architecture: yolo26` or ignores
+`architecture_checkpoint`, restart/redeploy a GPU Agent build that supports the
+runner family and selected checkpoint.
 
 ---
 
@@ -953,7 +962,7 @@ Failed callback:
 ```json
 {
   "status": "failed",
-  "error_message": "CUDA out of memory. Try batch_size=4.",
+  "error_message": "CUDA out of memory. Try batch=4.",
   "retryable": true
 }
 ```
@@ -1010,8 +1019,6 @@ The backend stores the selected `ModelArchitecture`, but it does not import trai
 
 ```python
 GPU_AGENT_RUNNER_REGISTRY = {
-    "yolov8": "YOLOv8Trainer",
-    "yolov9": "YOLOv9Trainer",
     "yolov10": "YOLOv10Trainer",
     "yolov11": "YOLOv11Trainer",
     "yolo26": "YOLOv26Trainer",
@@ -1036,7 +1043,8 @@ Model registry metadata example:
 
 ```json
 {
-  "architecture": "yolov8",
+  "architecture": "yolo26",
+  "architecture_checkpoint": "yolo26s.pt",
   "framework": "ultralytics",
   "version": "8",
   "task": "detection",
@@ -1172,7 +1180,7 @@ is reachable from that container rather than its own loopback interface.
 | --- | --- |
 | Dataset manifest is not train-ready | Validate split manifests and label generation before real training |
 | Label snapshot differs from PostgreSQL | Clear dataset cache when verification is cancelled or raw annotations change; promote a fresh verified cache at job start |
-| GPU out of memory | Conservative default `batch_size`, clear failed callback |
+| GPU out of memory | Conservative default `batch`, clear failed callback |
 | Duplicate metrics callbacks | Enforce idempotency by `job_id + epoch + step` |
 | Agent dies during training | Heartbeat timeout marks job as `failed` |
 | Cancel does not stop GPU process | Agent must own subprocess lifecycle and cleanup |

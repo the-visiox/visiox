@@ -22,7 +22,7 @@ from auto_label.services import (
 from auto_label.tasks import enqueue_auto_label_dataset_job
 from core.access import project_access_q
 from datasets.models import Dataset
-from datasets.standalone import ordered_image_media
+from datasets.services.media_browser import ordered_image_media
 
 
 class AutoLabelModelViewSet(viewsets.ModelViewSet):
@@ -151,7 +151,10 @@ class FrameAutoLabelPredictView(APIView):
         source = request.data.get('source')
         output_type = request.data.get('output_type', 'bbox')
         if not isinstance(source, dict) or output_type not in ('bbox', 'polygon'):
-            return Response({'error': 'A valid source and output_type are required.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'A valid source and output_type are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             confidence = inference_confidence(request.data.get('confidence'))
             engine, compatibility_model, source_response = self._resolve_source(request, dataset, source, output_type)
@@ -202,7 +205,11 @@ class FrameAutoLabelPredictView(APIView):
                 unmapped_labels.add(label)
                 continue
             shape_type = 'polygon' if output_type == 'polygon' else 'bbox'
-            data = prediction_polygon_data(prediction, media) if shape_type == 'polygon' else prediction_bbox_data(prediction, media)
+            data = (
+                prediction_polygon_data(prediction, media)
+                if shape_type == 'polygon'
+                else prediction_bbox_data(prediction, media)
+            )
             if data is None:
                 continue
             predictions.append({

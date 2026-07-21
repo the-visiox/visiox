@@ -4,7 +4,7 @@ import requests
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import viewsets, status
@@ -24,7 +24,7 @@ from deployments.serializers import (
 )
 from deployments.tasks import check_endpoint_drift
 from datasets.models import Dataset, Media
-from datasets.standalone import image_media_for_frame
+from datasets.services.media_browser import image_media_for_frame
 
 
 class InferenceAgentError(Exception):
@@ -162,6 +162,8 @@ class ModelRegistryViewSet(viewsets.ModelViewSet):
         return ModelRegistry.objects.filter(
             project_access_q(self.request.user, 'training_job__project__')
             | Q(training_job__isnull=True, created_by=self.request.user)
+        ).annotate(
+            endpoint_count_value=Count('endpoints', distinct=True),
         ).distinct().select_related('created_by', 'training_job')
 
     @extend_schema(responses={200: ModelRegistrySerializer})
@@ -277,7 +279,10 @@ class ModelRegistryViewSet(viewsets.ModelViewSet):
             )
         media_ids = list(media_by_id)
         if not media_ids:
-            return Response({'error': 'No images are available for model labeling.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'No images are available for model labeling.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             result = _request_dataset_predictions(entry, dataset, media_ids, confidence)

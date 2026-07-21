@@ -12,7 +12,12 @@ from deployments.models import ModelRegistry
 from projects.models import Project
 from training.agent import build_training_request
 from training.models import ModelArchitecture, TrainingJob
-from training.serializers import TrainingJobSerializer
+from training.serializers import (
+    TrainingJobDetailSerializer,
+    TrainingJobListSerializer,
+    TrainingJobSerializer,
+)
+from training.validators import validate_training_datasets
 
 
 class FineTuningTests(TestCase):
@@ -48,7 +53,10 @@ class FineTuningTests(TestCase):
         self.dataset.split_updated_at = now
         self.dataset.save()
         self.architecture = ModelArchitecture.objects.create(
-            name='YOLOv8 Detection', backbone='yolov8n', task_type='object_detection'
+            name='YOLO26 Detection - Small',
+            backbone='yolo26',
+            task_type='object_detection',
+            default_config={'checkpoint': 'yolo26s.pt', 'size': 's'},
         )
         self.parent_job = TrainingJob.objects.create(
             project=self.project,
@@ -87,6 +95,82 @@ class FineTuningTests(TestCase):
         self.assertEqual(job.parent_job, self.parent_job)
         self.assertEqual(job.base_model, self.registry)
         self.assertEqual(job.class_schema, [{'id': self.class_label.id, 'name': 'person'}])
+
+    def test_hyperparams_require_canonical_batch_key(self):
+        request = APIRequestFactory().post('/api/v1/training-jobs/')
+        request.user = self.user
+        serializer = TrainingJobSerializer(data={
+            'project': self.project.id,
+            'dataset_ids': [self.dataset.id],
+            'architecture': self.architecture.id,
+            'name': 'Invalid Batch Alias',
+            'hyperparams': {'epochs': 10, 'batch_size': 16},
+        }, context={'request': request})
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('hyperparams', serializer.errors)
+
+    def test_hyperparams_validate_device_image_size_and_learning_rate(self):
+        request = APIRequestFactory().post('/api/v1/training-jobs/')
+        request.user = self.user
+        serializer = TrainingJobSerializer(data={
+            'project': self.project.id,
+            'dataset_ids': [self.dataset.id],
+            'architecture': self.architecture.id,
+            'name': 'Validated Hyperparameters',
+            'hyperparams': {
+                'epochs': 10,
+                'batch': 16,
+                'device': '0,1',
+                'imgsz': 640,
+                'lr': 0.001,
+            },
+        }, context={'request': request})
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_list_serializer_omits_detail_only_fields(self):
+        list_data = TrainingJobListSerializer(self.parent_job).data
+        detail_data = TrainingJobDetailSerializer(self.parent_job).data
+
+        for field in ('class_schema', 'augmentation_config', 'artifacts', 'updated_at'):
+            self.assertNotIn(field, list_data)
+            self.assertIn(field, detail_data)
+
+    def test_multi_dataset_validation_uses_constant_query_count(self):
+        second_dataset = Dataset.objects.create(project=self.project, name='People 2')
+        media = []
+        for index in range(2):
+            media.append(Media.objects.create(
+                dataset=second_dataset,
+                type='image',
+                file=SimpleUploadedFile(f'second-{index}.jpg', b'image', content_type='image/jpeg'),
+                original_filename=f'second-{index}.jpg',
+                width=64,
+                height=64,
+                metadata={'category': 'raw', 'split': 'train' if index == 0 else 'val'},
+            ))
+        Annotation.objects.create(
+            media=media[0], class_label=self.class_label, annotator=self.user,
+            type='rectangle', data={'x': 1, 'y': 1, 'width': 10, 'height': 10},
+        )
+        now = timezone.now()
+        second_dataset.verification_status = 'verified'
+        second_dataset.verified_by = self.user
+        second_dataset.verified_at = now
+        second_dataset.split_config = {
+            'train': 50, 'val': 50, 'test': 0, 'source': 'imported_yolo26'
+        }
+        second_dataset.split_updated_at = now
+        second_dataset.save()
+
+        with self.assertNumQueries(1):
+            selected = validate_training_datasets(
+                self.project,
+                [self.dataset.id, second_dataset.id],
+            )
+
+        self.assertEqual([dataset.id for dataset in selected], [self.dataset.id, second_dataset.id])
 
     @override_settings(
         USE_MINIO=True,
@@ -132,4 +216,5 @@ class FineTuningTests(TestCase):
         self.assertEqual(payload['initial_checkpoint']['download_url'], 'https://minio/checkpoint')
         self.assertEqual(payload['initial_checkpoint']['source_training_job_id'], self.parent_job.id)
         self.assertEqual(payload['initial_checkpoint']['source_registry_id'], self.registry.id)
-
+        self.assertEqual(payload['architecture'], 'yolo26')
+        self.assertEqual(payload['architecture_checkpoint'], 'yolo26s.pt')

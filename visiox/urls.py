@@ -7,9 +7,6 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, Sp
 urlpatterns = [
     path('admin/', admin.site.urls),
 
-    # Profiler (only meaningful in DEBUG)
-    path('silk/', include('silk.urls', namespace='silk')),
-
     # Auth
     path('api/v1/auth/', include('authentication.urls')),
 
@@ -31,3 +28,6 @@ urlpatterns = [
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+if settings.ENABLE_SILK:
+    urlpatterns.append(path('silk/', include('silk.urls', namespace='silk')))

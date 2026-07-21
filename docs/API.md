@@ -375,7 +375,6 @@ Get list of projects.
     "task_type": "image_classification | object_detection | semantic_segmentation | instance_segmentation | keypoint_detection | video_annotation",
     "description": "string",
     "thumbnail": "http://... (presigned MinIO URL of first image, or null)",
-    "cvat_project_id": null,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
   }
@@ -444,7 +443,6 @@ Get list of datasets.
     "version": 1,
     "media_count": 100,
     "thumbnail": "http://... (presigned MinIO URL or null)",
-    "cvat_task_id": null,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
   }
@@ -555,6 +553,23 @@ Queue the import flow used by the dataset import dialog.
 | `format` | string | Yes | `images`, `yolo26`, or `coco` |
 | `files` | file[] | Yes | Up to 500 image files, or one archive for archive formats |
 | `replace_existing` | boolean | No | For YOLO26, reuse same-name images and replace their annotations |
+| `video_extraction` | JSON string | No | Diverse frame extraction settings for video-only `images` imports |
+
+When `video_extraction.enabled=true`, every uploaded file must be a video. The
+dataset worker samples the full timeline and compares color distribution,
+spatial layout, and edge structure. It keeps one visually distinctive frame
+from each time region, so no detection model is required. Supported fields are:
+
+```json
+{
+  "enabled": true,
+  "target": 200
+}
+```
+
+The generated `Media(type=image)` rows include `source_video`,
+`timestamp_seconds`, and visual selection metrics in `metadata`. The worker
+internally compares eight candidates per requested output image.
 
 **Response `202`:**
 
@@ -617,7 +632,7 @@ Delete multiple media files.
 ---
 
 ### GET `/api/v1/datasets/{id}/stats/`
-Get dataset statistics (including CVAT task info).
+Get dataset image and annotation statistics.
 
 **Response `200`:**
 ```json
@@ -627,17 +642,17 @@ Get dataset statistics (including CVAT task info).
   "version": 1,
   "project_id": 1,
   "project_name": "string",
-  "cvat_task_id": null,
   "created_at": "2024-01-01T00:00:00Z",
   "updated_at": "2024-01-01T00:00:00Z",
-  "cvat": null
+  "size": 100,
+  "annotation_count": 250
 }
 ```
 
 ---
 
 ### GET `/api/v1/datasets/{id}/browser/`
-Get CVAT browser data (frames, labels, annotations).
+Get native dataset browser data (frames, labels, annotations).
 
 **Response `200`:**
 ```json
@@ -658,7 +673,6 @@ Get the image for a frame by index (0-based).
 
 **Query params:**
 - `token` — JWT token (for `<img>` tags)
-- `quality` — `compressed` or `original` (CVAT mode)
 
 **Auth required:** Yes (`Authorization: Bearer ...` or `?token=` query param)
 **Response `200`:** Binary image data
@@ -710,33 +724,6 @@ Save annotations for a frame (full overwrite).
 
 ---
 
-### GET `/api/v1/datasets/{id}/annotate_url/`
-Get URL to open the dataset directly in CVAT for annotation.
-
-**Response `200`:**
-```json
-{
-  "url": "http://cvat.example.com/tasks/123"
-}
-```
-
----
-
-### POST `/api/v1/datasets/{id}/sync_cvat/`
-Sync annotations from CVAT to the database.
-
-**Response `200`:**
-```json
-{
-  "status": "synced",
-  "version": 2,
-  "cvat_status": "string",
-  "total_labels": 50
-}
-```
-
----
-
 ### POST `/api/v1/datasets/{id}/new_version/`
 Increment the dataset version.
 
@@ -744,33 +731,6 @@ Increment the dataset version.
 
 ---
 
-### POST `/api/v1/datasets/repair-cvat/`
-Repair datasets that lost their CVAT task link.
-
-**Response `200`:**
-```json
-{
-  "status": "ok",
-  "repaired_count": 2,
-  "repaired": [1, 5]
-}
-```
-
----
-
-### POST `/api/v1/datasets/cvat-webhook/`
-Receive webhook events from CVAT. **Auth required:** No
-
-**Request body:**
-```json
-{
-  "event": "create:task | delete:task | update:task | update:job",
-  "task": { "id": 123, "name": "string", "project_id": 1 },
-  "job": { "task_id": 123 }
-}
-```
-
----
 
 ### GET `/api/v1/datasets/{dataset_id}/export/`
 Export annotations to other formats.
@@ -799,6 +759,7 @@ Get list of class labels.
   {
     "id": 1,
     "project": 1,
+    "index": 0,
     "name": "car",
     "color": "#ef4444",
     "attributes": {},
@@ -824,6 +785,25 @@ Create a new class label.
 ```
 
 **Response `201`:** Class object
+
+New classes are appended to the project's zero-based model class order. The
+`index` field is read-only; use the reorder endpoint to change it.
+
+---
+
+### POST `/api/v1/classes/reorder/`
+Change the model class order for a project. The request must contain every
+current class exactly once.
+
+**Request body:**
+```json
+{
+  "project": 1,
+  "class_ids": [3, 1, 2]
+}
+```
+
+**Response `200`:** Class objects ordered by their updated zero-based `index`.
 
 ---
 
@@ -1287,17 +1267,26 @@ output only.
 ### GET `/api/v1/architectures/`
 Get list of model architectures.
 
+By default the catalog returns active architectures for new training runs.
+Use `?include_inactive=true` when resolving the original architecture of a
+completed legacy run for fine-tuning.
+
 **Response `200`:**
 ```json
 [
   {
     "id": 1,
-    "name": "YOLOv8",
-    "backbone": "CSPDarknet",
+    "name": "YOLO26 Detection - Small",
+    "backbone": "yolo26",
     "task_type": "object_detection | image_classification | semantic_segmentation | instance_segmentation | keypoint_detection",
     "description": "string",
-    "default_config": {},
+    "default_config": {
+      "architecture": "yolo26",
+      "size": "s",
+      "checkpoint": "yolo26s.pt"
+    },
     "is_builtin": true,
+    "is_active": true,
     "created_at": "2024-01-01T00:00:00Z"
   }
 ]
@@ -1335,28 +1324,36 @@ Get list of training jobs.
     "dataset": 1,
     "dataset_ids": [1, 2, 3],
     "architecture": 1,
-    "architecture_name": "YOLOv8",
+    "architecture_name": "YOLO26 Detection - Small",
     "initialization_mode": "architecture | fine_tune",
     "parent_job": null,
     "parent_job_name": null,
     "base_model": null,
     "base_model_name": null,
-    "class_schema": [{ "id": 1, "name": "person" }],
     "created_by": 1,
     "created_by_username": "string",
     "name": "Training Run #1",
     "status": "pending | queued | running | completed | failed | cancelled",
-    "hyperparams": { "epochs": 100, "lr": 0.001 },
-    "augmentation_config": {},
+    "hyperparams": { "epochs": 100, "batch": 16, "lr": 0.001 },
     "error_message": null,
+    "artifact_urls": {},
     "started_at": null,
     "finished_at": null,
     "created_at": "2024-01-01T00:00:00Z",
-    "updated_at": "2024-01-01T00:00:00Z",
     "experiment_count": 0
   }
 ]
 ```
+
+The list response omits the detail-only `class_schema`, `augmentation_config`,
+raw `artifacts`, and `updated_at` fields. Use `GET /api/v1/training-jobs/{id}/`
+when those fields are required.
+
+---
+
+### GET `/api/v1/training-jobs/{id}/`
+Get one training job. The response includes all list fields plus
+`class_schema`, `augmentation_config`, raw `artifacts`, and `updated_at`.
 
 ---
 
@@ -1373,7 +1370,7 @@ Create a new training job.
   "initialization_mode": "fine_tune",
   "base_model": 17,
   "name": "string",
-  "hyperparams": { "epochs": 100, "lr": 0.001 },
+  "hyperparams": { "epochs": 100, "batch": 16, "imgsz": 640, "lr": 0.001 },
   "augmentation_config": {}
 }
 ```
@@ -1381,6 +1378,10 @@ Create a new training job.
 `dataset_ids` accepts one or more verified, generated datasets from the same
 project. `dataset` remains the first selected dataset for backward compatibility.
 The training payload combines each dataset's train/validation/test split.
+
+`batch` is the canonical batch-size key. New requests do not accept
+`batch_size`; the GPU payload adapter only retains that alias for existing jobs.
+`device` accepts a GPU index, a comma-separated GPU index list, `cpu`, or `mps`.
 
 Set `initialization_mode` to `fine_tune` and pass a `base_model` registry ID to
 start from a previous run's `best.pt`. The source registry entry must be
@@ -1467,7 +1468,7 @@ Get list of model registry entries.
   {
     "id": 1,
     "training_job": 1,
-    "name": "YOLOv8 v1.0",
+    "name": "YOLO26 Small v1.0",
     "version": 1,
     "format": "onnx | pytorch | tensorflow",
     "model_file": "http://... (presigned URL from visiox-artifacts MinIO bucket; path: training-jobs/{job_id}/weights/{filename})",

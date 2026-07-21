@@ -13,7 +13,7 @@ from training.label_cache import (
 )
 
 
-SUPPORTED_ARCHITECTURES = {'yolov8', 'yolov9', 'yolov10', 'yolov11', 'yolo26'}
+SUPPORTED_ARCHITECTURES = {'yolov10', 'yolov11', 'yolo26'}
 LABEL_SOURCE_OF_TRUTH = 'postgres'
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,15 @@ def _architecture_name(job):
             if architecture in normalized:
                 return architecture
     raise TrainingAgentError(f'Architecture "{job.architecture.name}" is not supported by the GPU agent.')
+
+
+def _architecture_checkpoint(job):
+    checkpoint = (job.architecture.default_config or {}).get('checkpoint')
+    if not isinstance(checkpoint, str) or not checkpoint.endswith('.pt'):
+        raise TrainingAgentError(
+            f'Architecture "{job.architecture.name}" does not define a valid PyTorch checkpoint.'
+        )
+    return PurePosixPath(checkpoint).name
 
 
 def _headers():
@@ -90,7 +99,7 @@ def build_training_request(job):
     if not getattr(settings, 'USE_MINIO', False):
         raise TrainingAgentError('GPU training currently requires USE_MINIO=True.')
 
-    class_rows = list(job.project.classes.order_by('id').values('id', 'name'))
+    class_rows = list(job.project.classes.order_by('index', 'id').values('id', 'name'))
     class_names = [item['name'] for item in class_rows]
     if not class_names:
         raise TrainingAgentError('The selected project has no annotation classes.')
@@ -173,6 +182,7 @@ def build_training_request(job):
             'class_names': class_names,
         },
         'architecture': _architecture_name(job),
+        'architecture_checkpoint': _architecture_checkpoint(job),
         'hyperparameters': hyperparams,
         'callbacks': {
             'metrics_url': f'{callback_root}/metrics/',

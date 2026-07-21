@@ -4,7 +4,7 @@ from collections import defaultdict
 from django.db import transaction
 from django.utils import timezone
 
-from datasets.standalone import is_augmented
+from datasets.services.media_browser import is_augmented
 
 
 SPLITS = ('train', 'val', 'test')

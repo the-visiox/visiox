@@ -1,5 +1,6 @@
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.storage import default_storage, storages
@@ -18,7 +19,7 @@ from training.label_cache import (
 )
 from training.agent import build_training_request
 from training.models import ModelArchitecture, TrainingJob
-from training.serializers import TrainingJobSerializer
+from training.serializers import TrainingJobListSerializer, TrainingJobSerializer
 
 
 @override_settings(
@@ -64,9 +65,10 @@ class DatasetLabelCacheTests(TestCase):
         self._create_box(self.val_media, x=15, y=25, width=35, height=45)
 
         self.architecture = ModelArchitecture.objects.create(
-            name='YOLOv8 Detection',
-            backbone='yolov8n',
+            name='YOLO26 Detection - Nano',
+            backbone='yolo26',
             task_type='object_detection',
+            default_config={'checkpoint': 'yolo26n.pt', 'size': 'n'},
         )
 
     def tearDown(self):
@@ -172,14 +174,44 @@ class DatasetLabelCacheTests(TestCase):
         self.assertIn('confusion_matrix.png', urls)
         self.assertNotIn('metrics.json', urls)
 
+    def test_training_job_list_uses_saved_artifact_metadata_without_storage_checks(self):
+        job = TrainingJob.objects.create(
+            project=self.project,
+            dataset=self.dataset,
+            architecture=self.architecture,
+            created_by=self.user,
+            name='Listed Artifact Run',
+            artifacts={
+                'best.pt': {'storage_key': 'training-jobs/1000/artifacts/best.pt'},
+            },
+        )
+        storage = Mock()
+        storage.url.side_effect = lambda key: f'/media/{key}'
+
+        with patch('training.services.artifact_service.get_artifacts_storage', return_value=storage):
+            urls = TrainingJobListSerializer(
+                job,
+            ).data['artifact_urls']
+
+        self.assertEqual(urls, {
+            'best.pt': '/media/training-jobs/1000/artifacts/best.pt',
+        })
+        storage.exists.assert_not_called()
+
     @override_settings(
+        USE_MINIO=True,
         TRAINING_CALLBACK_TOKEN='callback-token',
         TRAINING_CALLBACK_BASE_URL='http://127.0.0.1:18080',
         AWS_S3_ENDPOINT_URL='http://10.29.30.20:9000',
         AWS_STORAGE_BUCKET_NAME='visiox-media',
         AWS_S3_ADDRESSING_STYLE='path',
     )
-    def test_build_training_request_uses_configured_callback_base_url(self):
+    @patch('training.agent.promote_dataset_cache_to_job', return_value={
+        'job_label_keys': [],
+        'manifest': {'train': [], 'val': [], 'test': []},
+        'test_dataset_id': None,
+    })
+    def test_build_training_request_uses_configured_callback_base_url(self, _promote):
         job = TrainingJob.objects.create(
             project=self.project,
             dataset=self.dataset,
@@ -199,3 +231,5 @@ class DatasetLabelCacheTests(TestCase):
             payload['callbacks']['heartbeat_url'],
             f'http://127.0.0.1:18080/api/v1/internal/training-jobs/{job.id}/heartbeat/',
         )
+        self.assertEqual(payload['architecture'], 'yolo26')
+        self.assertEqual(payload['architecture_checkpoint'], 'yolo26n.pt')
