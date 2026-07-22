@@ -14,6 +14,13 @@ from annotations.serializers import (
     JobAnnotationsReplaceSerializer,
 )
 from datasets.models import Media
+from core.access import project_access_q
+
+
+def _enqueue_dataset_label_cache_clear(dataset_id: int) -> None:
+    from datasets.tasks import enqueue_dataset_label_cache_clear
+
+    enqueue_dataset_label_cache_clear(dataset_id)
 
 
 class AnnotationViewSet(viewsets.ModelViewSet):
@@ -23,7 +30,7 @@ class AnnotationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = Annotation.objects.filter(
-            media__dataset__project__team__members__user=user
+            project_access_q(user, 'media__dataset__project__')
         ).distinct().select_related('class_label', 'annotator', 'media')
 
         media_id = self.request.query_params.get('media')
@@ -54,8 +61,8 @@ class AnnotationViewSet(viewsets.ModelViewSet):
         if not ids:
             return Response({'error': 'ids list required.'}, status=status.HTTP_400_BAD_REQUEST)
         Annotation.objects.filter(
+            project_access_q(request.user, 'media__dataset__project__'),
             id__in=ids,
-            media__dataset__project__team__members__user=request.user,
         ).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -104,5 +111,10 @@ class MediaAnnotationsView(APIView):
                 )
                 for item in items
             ])
+            if (media.metadata or {}).get('category') != 'augmented':
+                media.dataset.invalidate_training_verification()
+                transaction.on_commit(
+                    lambda dataset_id=media.dataset_id: _enqueue_dataset_label_cache_clear(dataset_id)
+                )
         qs = Annotation.objects.filter(media=media).select_related('class_label', 'annotator')
         return Response(AnnotationSerializer(qs, many=True).data)

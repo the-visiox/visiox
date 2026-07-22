@@ -31,6 +31,7 @@ class Project(models.Model):
     name = models.CharField(max_length=255)
     task_type = models.CharField(max_length=100, choices=TASK_TYPE_CHOICES)
     description = models.TextField(blank=True, null=True)
+    is_public = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

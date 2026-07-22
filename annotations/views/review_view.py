@@ -1,10 +1,11 @@
 from drf_spectacular.utils import extend_schema
-from rest_framework import viewsets, status
+from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from annotations.models import Review
 from annotations.serializers import ReviewSerializer
+from core.access import project_access_q
 
 
 class ReviewViewSet(viewsets.ModelViewSet):
@@ -14,7 +15,7 @@ class ReviewViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = Review.objects.filter(
-            annotation__media__dataset__project__team__members__user=user
+            project_access_q(user, 'annotation__media__dataset__project__')
         ).distinct().select_related('reviewer', 'annotation')
 
         review_status = self.request.query_params.get('status')

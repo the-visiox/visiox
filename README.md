@@ -1,255 +1,173 @@
-## VisioX Backend
+# VisioX Backend
 
-Django + Django REST Framework API for the VisioX computer vision platform: teams, projects, datasets, media upload, **annotations**, labeling jobs, training, deployments, billing, and OpenAPI docs.
+Django REST API for the VisioX computer-vision platform. The backend manages
+authentication, projects, datasets, annotations, training orchestration,
+deployments and billing. The frontend lives in the sibling `visiox-ui` repo.
+
+## Current deployment
+
+| Host | Services | Notes |
+| --- | --- | --- |
+| `10.29.30.9` | Django API `:8000`, Celery beat, `general-worker` | General worker listens only to `celery`, concurrency `2`, prefetch `1` |
+| `10.29.30.20` | PostgreSQL `:5432`, Redis `:6379`, MinIO `:9000/:9001`, `dataset-worker` | Dataset worker listens only to `datasets`, concurrency `1`, prefetch `1` |
+| GPU host | Training/inference agents and GPU Celery worker | GPU worker listens only to `gpu_training` |
+
+Both backend workers are built with `Dockerfile.worker` and run as
+`uid=10001(visiox)`. Infrastructure on `.20` belongs to the Compose project
+`infiniq`; include `-p infiniq` in commands unless the compose file declares
+`name: infiniq`.
+
+```text
+visiox-ui -> Django API (.9) -> PostgreSQL / Redis / MinIO (.20)
+                               -> celery queue   -> general-worker (.9)
+                               -> datasets queue -> dataset-worker (.20)
+                               -> GPU agent      -> GPU runtime
+```
+
+Container IDs and Celery node suffixes change after recreation. Do not hardcode
+values such as `dataset-worker@<container-id>` in runbooks.
 
 ## Requirements
 
-- Python 3.12+ (recommended)
+- Python 3.12+
 - PostgreSQL 16+
-- Redis 7+ (Celery broker / cache)
-- `pip` and a virtual environment
+- Redis 7+
+- MinIO when `USE_MINIO=True`
+- Docker Engine/Desktop with Docker Compose v2 for container deployment
 
-## Chạy tách riêng: DB / Backend / Frontend
+## Environment setup
 
-Mở **3 terminal** độc lập để dễ debug:
-
-1. Terminal A: chạy **Database + Redis**
-2. Terminal B: chạy **Django Backend**
-3. Terminal C: chạy **Next.js Frontend** (`visiox-ui`)
-
----
-
-### Terminal A — Database (Postgres) + Redis
-
-> Trong repo `visiox`
+Create a local environment file and replace every placeholder:
 
 ```bash
-docker compose up -d db redis
+cp env.example .env
 ```
 
-Kiểm tra nhanh:
+The dataset worker on `.20` uses a separate template:
 
 ```bash
-docker compose ps
+cp env.worker.example .env.worker
+chmod 600 .env.worker
 ```
 
-Kỳ vọng `db` và `redis` ở trạng thái `Up`.
+Never commit `.env`, `.env.worker`, database passwords, Django `SECRET_KEY`,
+MinIO credentials or agent tokens. Use a MinIO service account rather than the
+root account.
 
----
-
-### Terminal B — Backend (Django)
-
-> Trong repo `visiox`
+## Run the API locally
 
 ```bash
 python -m venv .venv
-# Windows:
+# Windows
 .venv\Scripts\activate
-# macOS/Linux:
+# Linux/macOS
 # source .venv/bin/activate
 
 pip install -r requirements.txt
-cp env.example .env
-```
-
-Chỉnh `.env` (khi DB chạy bằng Docker ở terminal A):
-
-```env
-DATABASE_HOST=localhost
-DATABASE_PORT=5433
-DATABASE_NAME=visiox_db
-DATABASE_USER=postgres
-DATABASE_PASSWORD=postgres
-CELERY_BROKER_URL=redis://127.0.0.1:6379/0
-CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
-```
-
-Chạy migrate + seed:
-
-```bash
 python manage.py migrate
 python manage.py setup_groups
-python manage.py seed_demo_data
-```
-
-Nếu bạn dùng Conda/env riêng (ví dụ `py312`), ưu tiên chạy bằng đúng Python executable để tránh nhầm môi trường:
-
-```bash
-C:\Users\Admin\miniconda3\envs\py312\python.exe manage.py migrate
-```
-
-> Quan trọng cho annotation: migration `datasets.0006_medialabelprofile` phải ở trạng thái **[X]**. Nếu thiếu, thao tác save label profile sẽ lỗi `relation "media_label_profiles" does not exist` (frontend có thể hiện `Annotations saved, but label profile sync failed.`).
-
-Kiểm tra nhanh:
-
-```bash
-python manage.py showmigrations datasets
-```
-
-Chạy API:
-
-```bash
 python manage.py runserver 0.0.0.0:8000
 ```
 
-Test nhanh:
-- Swagger: `http://localhost:8000/api/docs/`
-- Health check thủ công: mở `http://localhost:8000/api/schema/`
+Useful URLs:
 
-> Tất cả API endpoints hiện dùng prefix `/api/v1/` (ví dụ `/api/v1/auth/login/`, `/api/v1/datasets/`).
-
----
-
-### Terminal C — Frontend (Next.js)
-
-> Trong repo `visiox-ui`
-
-```bash
-pnpm install
-cp .env.local.example .env.local
-```
-
-Đảm bảo `.env.local`:
-
-```env
-NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
-```
-
-Chạy frontend:
-
-```bash
-pnpm dev
-```
-
-Mở `http://localhost:3000`, đăng nhập:
-- Email: `demo@visiox.ai`
-- Password: `Demo1234!`
-
-## Database host: Docker vs local CLI
-
-- **`DATABASE_HOST=db`** resolves only **inside** Docker Compose (service name). Running `python manage.py` **on your PC** (Windows/macOS/Linux) must use **`localhost`** (or `127.0.0.1`).
-- Compose maps Postgres to host port **`5433`** by default (`DB_HOST_PORT`, see `docker-compose.yml`). From the host, use `DATABASE_PORT=5433` when talking to the containerized DB. Use **`5432`** if PostgreSQL is installed natively on the machine.
-
-Example **host** `.env` when DB runs in Docker:
-
-```env
-DATABASE_NAME=visiox_db
-DATABASE_USER=postgres
-DATABASE_PASSWORD=postgres
-DATABASE_HOST=localhost
-DATABASE_PORT=5433
-
-CELERY_BROKER_URL=redis://127.0.0.1:6379/0
-CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
-```
-
-Inside containers, Compose overrides `DATABASE_HOST` to `db` where needed.
-
-## 1) Local setup (without Docker)
-
-```bash
-cd visiox
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# Unix: source .venv/bin/activate
-pip install -r requirements.txt
-cp env.example .env
-# Edit .env: localhost + correct DATABASE_PORT (5432 or 5433)
-python manage.py migrate
-python manage.py setup_groups
-python manage.py seed_demo_data
-python manage.py runserver 0.0.0.0:8000
-```
-
-## 2) Docker setup
-
-```bash
-docker compose up --build -d db redis
-docker compose exec api python manage.py migrate
-docker compose exec api python manage.py setup_groups
-docker compose exec api python manage.py seed_demo_data
-```
-
-Or bring up the full stack (`api`, `worker`, `beat`) per `docker-compose.yml`.
-
-## API surface (selected)
-
-Tất cả endpoints có prefix `/api/v1/`. Thiết kế theo chuẩn REST:
-
-| Area | Method | Endpoint | Mô tả |
-|------|--------|----------|-------|
-| **Auth** | POST | `/api/v1/auth/login/` | Đăng nhập, trả về JWT |
-| | POST | `/api/v1/auth/register/` | Đăng ký tài khoản |
-| | POST | `/api/v1/auth/token/refresh/` | Refresh access token |
-| | POST | `/api/v1/auth/logout/` | Đăng xuất |
-| **Teams** | GET/POST | `/api/v1/teams/` | Danh sách / tạo team |
-| | GET/POST | `/api/v1/teams/{id}/invitations/` | Danh sách / gửi email invite |
-| | DELETE | `/api/v1/teams/{id}/invitations/{invite_id}/` | Huỷ invitation |
-| | POST | `/api/v1/invitations/{token}/accept/` | Chấp nhận lời mời |
-| | GET | `/api/v1/teams/{id}/members/` | Danh sách thành viên |
-| | POST | `/api/v1/teams/{id}/invite/` | Thêm thành viên trực tiếp |
-| | PATCH/DELETE | `/api/v1/teams/{id}/members/{member_id}/` | Đổi role / xoá thành viên |
-| **Projects** | GET/POST | `/api/v1/projects/` | Danh sách / tạo project |
-| | GET/PATCH/DELETE | `/api/v1/projects/{id}/` | Chi tiết / cập nhật / xoá |
-| **Datasets** | GET/POST | `/api/v1/datasets/` | Danh sách / tạo dataset |
-| | GET/DELETE | `/api/v1/datasets/{id}/media/` | Danh sách media / xoá nhiều (`{"media_ids":[...]}`) |
-| | POST | `/api/v1/datasets/{id}/upload/` | Upload file |
-| | GET | `/api/v1/datasets/{id}/stats/` | Thống kê dataset |
-| | GET | `/api/v1/datasets/{id}/browser/` | Frame browser với annotations |
-| | POST | `/api/v1/datasets/{id}/versions/` | Tạo version mới |
-| | POST | `/api/v1/datasets/{id}/cvat-sync/` | Sync với CVAT |
-| | GET | `/api/v1/datasets/{id}/annotate-url/` | Lấy URL annotation CVAT |
-| | POST | `/api/v1/datasets/{id}/augmentations/preview/` | Xem trước augmentation |
-| | POST | `/api/v1/datasets/{id}/augmentations/` | Áp dụng augmentation |
-| | GET | `/api/v1/datasets/{id}/frames/{n}/` | Ảnh frame theo index |
-| | GET | `/api/v1/datasets/{id}/export/?format={coco,yolo,voc}` | Export annotations |
-| **Labels** | GET/POST | `/api/v1/classes/?project={id}` | Classes của project |
-| | PATCH/DELETE | `/api/v1/classes/{id}/` | Cập nhật / xoá class |
-| **Annotations** | GET/PUT | `/api/v1/datasets/{id}/frames/{n}/annotations/` | Lấy / lưu annotations |
-| | GET/PUT | `/api/v1/media/{id}/annotations/` | Annotations theo media |
-| **Training** | GET/POST | `/api/v1/training-jobs/` | Danh sách / tạo job |
-| | PATCH | `/api/v1/training-jobs/{id}/` với `{"status":"queued"}` | Bắt đầu training |
-| | PATCH | `/api/v1/training-jobs/{id}/` với `{"status":"cancelled"}` | Dừng training |
-| | GET | `/api/v1/training-jobs/{id}/experiments/` | Experiments của job |
-| | GET | `/api/v1/experiments/{id}/metrics/` | Metrics của experiment |
-| **Deployments** | GET/POST | `/api/v1/endpoints/` | Danh sách / tạo endpoint |
-| | PATCH | `/api/v1/endpoints/{id}/` với `{"status":"active"}` | Khởi động endpoint |
-| | PATCH | `/api/v1/endpoints/{id}/` với `{"status":"inactive"}` | Tắt endpoint |
-| | GET/POST | `/api/v1/registry/` | Model registry |
-| **Dataverse** | GET | `/api/v1/dataverse/` | Danh sách project công khai |
-| | POST | `/api/v1/dataverse/` | Chia sẻ project lên Dataverse |
-| | POST | `/api/v1/dataverse/{id}/fork/` | Fork project |
-
-## Documentation URLs
-
+- API base: `http://localhost:8000/api/v1/`
 - Swagger: `http://localhost:8000/api/docs/`
 - ReDoc: `http://localhost:8000/api/redoc/`
 - OpenAPI schema: `http://localhost:8000/api/schema/`
 - Admin: `http://localhost:8000/admin/`
-- Silk (when `DEBUG=True`): `http://localhost:8000/silk/`
 
-## Demo account
+All application endpoints use `/api/v1/`. Documentation endpoints intentionally
+remain under `/api/`.
 
-After `seed_demo_data`:
+## Run application services on `.9`
 
-- **Email:** `demo@visiox.ai`
-- **Password:** `Demo1234!`
-
-## CORS
-
-Default allowed origins include `http://localhost:3000` and `http://127.0.0.1:3000`. For other front-end origins, set **`CORS_ALLOWED_ORIGINS`** (comma-separated) in `.env`.
-
-## Useful commands
+`docker-compose.yml` runs the API, general worker and beat. It connects to the
+shared infrastructure on `.20` using `.env`.
 
 ```bash
-python manage.py runserver 0.0.0.0:8000
-celery -A visiox worker -l info
-celery -A visiox beat -l info
-python manage.py makemigrations
-python manage.py migrate
-python manage.py showmigrations datasets
+docker compose config --quiet
+docker compose up -d --build
+docker compose ps
+docker compose logs -f worker
 ```
+
+## Manage infrastructure and dataset worker on `.20`
+
+Use the existing Compose project name so commands target the running stack.
+The full deployment, verification and rollback procedure is in
+[docs/DEPLOY_DATASET_WORKER_MINIO.md](docs/DEPLOY_DATASET_WORKER_MINIO.md).
+
+```bash
+docker compose -p infiniq -f docker-compose.infra.yml ps
+docker compose -p infiniq -f docker-compose.infra.yml logs -f worker-datasets
+```
+
+## Dataset imports
+
+With `USE_CELERY=True`, dataset import jobs are published explicitly to the
+`datasets` queue and processed on `.20`, close to MinIO. The API stages incoming
+files in the configured default storage and records progress in
+`dataset_import_jobs`. Images, YOLO26 ZIP and COCO imports are supported.
+
+YOLO26 archives must contain `data.yaml`; the file may be inside one top-level
+directory. The upload dialog can safely update same-name YOLO26 images: existing
+MinIO objects are reused, annotations are replaced after validation, and
+unambiguous one-based label IDs are normalized to the class order in `data.yaml`.
+Import failures are persisted on the job and should be displayed by
+the frontend rather than remaining at “Upload queued for worker”.
+
+Performance controls:
+
+```env
+DATASET_IMPORT_STORAGE_WORKERS=6
+DATASET_IMPORT_BATCH_SIZE=24
+```
+
+Restart only `worker-datasets` after changing these values.
+
+## Storage
+
+- PostgreSQL is the source of truth for metadata, annotations and split state.
+- `visiox-media` stores dataset media, thumbnails, import staging and generated
+  label snapshots when MinIO delivery is enabled.
+- `visiox-artifacts` stores model weights and training artifacts.
+- MinIO credentials must never be sent to the browser.
+
+See [docs/STORAGE.md](docs/STORAGE.md) for object paths and
+[docs/DEPLOY_DATASET_WORKER_MINIO.md](docs/DEPLOY_DATASET_WORKER_MINIO.md) for
+the deployment runbook.
+
+## Verification
+
+```bash
+python manage.py check
+python manage.py showmigrations datasets
+python manage.py test datasets.tests
+```
+
+For documentation and Compose edits:
+
+```bash
+docker compose config --quiet
+docker compose -p infiniq -f docker-compose.infra.yml config --quiet
+```
+
+The second command must run on `.20` where `.env.worker` exists.
+
+## Documentation
+
+- [API reference](docs/API.md)
+- [Architecture diagrams](docs/ARCHITECTURE_DIAGRAMS.md)
+- [Database schema](docs/DATABASE.md)
+- [MinIO storage](docs/STORAGE.md)
+- [Dataset worker deployment](docs/DEPLOY_DATASET_WORKER_MINIO.md)
+- [Augmentation and scaling](docs/AUGMENTATION_AND_SCALING.md)
+- [Training and GPU agent](docs/TRAIN.md)
+- [Annotation Auto Label](docs/AUTO_LABEL_ANNOTATION.md)
 
 ## Frontend pairing
 
-The **visiox-ui** Next app uses `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`) and JWT from `/api/auth/login/`.
+The Next.js frontend uses `NEXT_PUBLIC_API_URL` without a trailing slash, for
+example `http://10.29.30.9:8000`. It authenticates against
+`/api/v1/auth/login/` and sends JWT Bearer tokens to `/api/v1/` endpoints.

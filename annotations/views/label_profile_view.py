@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 
 from annotations.models import Class
 from datasets.models import Dataset, Media, MediaLabelProfile
-from datasets.standalone import image_media_for_frame
+from datasets.services.media_browser import image_media_for_frame
 
 
 class LabelItemSerializer(serializers.Serializer):
@@ -65,6 +65,8 @@ class MediaLabelProfileView(APIView):
 
 class DatasetFrameLabelProfileView(APIView):
     """GET/PUT label roster for a dataset frame (native mode) — resolves to underlying ``Media``."""
+
+    throttle_classes = []
 
     @extend_schema(responses={200: LabelProfileWriteSerializer})
     def get(self, request, dataset_id, frame_num):

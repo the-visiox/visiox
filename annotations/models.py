@@ -1,4 +1,5 @@
-from django.db import models
+from django.db import models, transaction
+from django.db.models import Max
 from django.conf import settings
 
 
@@ -11,7 +12,8 @@ class Class(models.Model):
         related_name='classes'
     )
     name = models.CharField(max_length=255)
-    color = models.CharField(max_length=7, default='#000000')  # Hex color code
+    color = models.CharField(max_length=7, default='#E66700')  # Hex color code
+    index = models.PositiveIntegerField(blank=True)
     attributes = models.JSONField(default=dict, blank=True)  # Custom attributes for the class
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -19,7 +21,28 @@ class Class(models.Model):
         db_table = 'classes'
         verbose_name_plural = 'Classes'
         unique_together = ['project', 'name']
-        ordering = ['name']
+        ordering = ['index', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'index'],
+                name='unique_class_index_per_project',
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.index is None and self.project_id:
+            from projects.models import Project
+
+            with transaction.atomic():
+                Project.objects.select_for_update().get(pk=self.project_id)
+                highest = (
+                    type(self).objects
+                    .filter(project_id=self.project_id)
+                    .aggregate(value=Max('index'))['value']
+                )
+                self.index = 0 if highest is None else highest + 1
+                return super().save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} - {self.project.name}"

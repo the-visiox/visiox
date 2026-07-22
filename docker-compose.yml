@@ -1,5 +1,3 @@
-version: '3.9'
-
 # App services — each developer runs this locally
 #
 #   cp env.example .env   # fill in shared server IPs
@@ -23,13 +21,23 @@ services:
       - .env
 
   worker:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
     restart: unless-stopped
-    command: celery -A visiox worker -l info
+    command: >
+      celery -A visiox worker
+      -l info
+      -Q celery
+      --concurrency=2
+      --prefetch-multiplier=1
+      --hostname=general-worker@%h
     volumes:
       - .:/app
     env_file:
       - .env
+    environment:
+      TRAINING_AGENT_URL: ${TRAINING_AGENT_URL:-http://host.docker.internal:8002}
 
   beat:
     build: .

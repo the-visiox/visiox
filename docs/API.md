@@ -1,6 +1,8 @@
 # VisioX Platform — API Reference
 
-Base URL: `http://localhost:8000`
+Application API base URL: `http://localhost:8000/api/v1/`
+
+OpenAPI/interactive documentation remains under `/api/`.
 
 **Authentication methods:**
 
@@ -9,7 +11,9 @@ Base URL: `http://localhost:8000`
 | JWT Bearer | `Authorization: Bearer <access_token>` | Default. Access token expires in 1 hour. |
 | API Key | `X-API-KEY: <raw key>` | Programmatic access. Key shown once at creation. |
 
-> **Frame image endpoints** (`/api/datasets/{id}/frames/{n}/`) use `AllowAny` — no auth required. Pass the URL directly into `<img src>` without headers or tokens.
+> **Frame image endpoints** (`/api/v1/datasets/{id}/frames/{n}/`) require a
+> valid JWT. They accept `?token=<access-token>` for image elements that cannot
+> set an `Authorization` header.
 
 Default content-type: `application/json`
 
@@ -34,7 +38,7 @@ Default content-type: `application/json`
 
 ## 1. Authentication
 
-### POST `/api/auth/login/`
+### POST `/api/v1/auth/login/`
 Login with username/password, returns JWT tokens.
 
 **Auth required:** No
@@ -62,7 +66,7 @@ Login with username/password, returns JWT tokens.
 
 ---
 
-### POST `/api/auth/register/`
+### POST `/api/v1/auth/register/`
 Register a new account.
 
 **Auth required:** No
@@ -90,7 +94,7 @@ Register a new account.
 
 ---
 
-### POST `/api/auth/logout/`
+### POST `/api/v1/auth/logout/`
 Invalidate the refresh token (blacklist).
 
 **Auth required:** No
@@ -106,7 +110,7 @@ Invalidate the refresh token (blacklist).
 
 ---
 
-### GET `/api/auth/me/`
+### GET `/api/v1/auth/me/`
 Get current user information.
 
 **Auth required:** Yes
@@ -125,7 +129,7 @@ Get current user information.
 
 ---
 
-### POST `/api/auth/oauth/`
+### POST `/api/v1/auth/oauth/`
 Login via OAuth (Google or GitHub).
 
 **Auth required:** No
@@ -153,7 +157,7 @@ Login via OAuth (Google or GitHub).
 
 ---
 
-### POST `/api/auth/token/refresh/`
+### POST `/api/v1/auth/token/refresh/`
 Refresh the access token using a refresh token.
 
 **Auth required:** No
@@ -176,7 +180,7 @@ Refresh the access token using a refresh token.
 
 ## 2. Teams
 
-### GET `/api/teams/`
+### GET `/api/v1/teams/`
 Get list of teams the current user is a member of.
 
 **Response `200`:**
@@ -195,7 +199,7 @@ Get list of teams the current user is a member of.
 
 ---
 
-### POST `/api/teams/`
+### POST `/api/v1/teams/`
 Create a new team. The creator is automatically set as owner with role `owner`.
 
 **Request body:**
@@ -209,14 +213,14 @@ Create a new team. The creator is automatically set as owner with role `owner`.
 
 ---
 
-### GET `/api/teams/{id}/`
+### GET `/api/v1/teams/{id}/`
 Get team details.
 
 **Response `200`:** Team object
 
 ---
 
-### PUT `/api/teams/{id}/`
+### PUT `/api/v1/teams/{id}/`
 Update team (requires owner or admin role).
 
 **Request body:**
@@ -230,14 +234,14 @@ Update team (requires owner or admin role).
 
 ---
 
-### DELETE `/api/teams/{id}/`
+### DELETE `/api/v1/teams/{id}/`
 Delete team. **Permission required:** `teams.delete_team`
 
 **Response `204`:** No content
 
 ---
 
-### GET `/api/teams/{id}/members/`
+### GET `/api/v1/teams/{id}/members/`
 Get the list of team members.
 
 **Response `200`:**
@@ -256,7 +260,7 @@ Get the list of team members.
 
 ---
 
-### POST `/api/teams/{id}/invite/`
+### POST `/api/v1/teams/{id}/invite/`
 Invite a user to the team. **Permission required:** `teams.invite_member` + owner/admin
 
 **Request body:**
@@ -271,14 +275,14 @@ Invite a user to the team. **Permission required:** `teams.invite_member` + owne
 
 ---
 
-### DELETE `/api/teams/{id}/members/{member_id}/`
+### DELETE `/api/v1/teams/{id}/members/{member_id}/`
 Remove a member from the team (cannot remove the owner).
 
 **Response `204`:** No content
 
 ---
 
-### PATCH `/api/teams/{id}/members/{member_id}/role/`
+### PATCH `/api/v1/teams/{id}/members/{member_id}/role/`
 Update a member's role.
 
 **Request body:**
@@ -292,7 +296,7 @@ Update a member's role.
 
 ---
 
-### POST `/api/teams/{id}/send_invitation/`
+### POST `/api/v1/teams/{id}/send_invitation/`
 Send an email invitation to a new user (without an existing account). **Permission required:** owner/admin
 
 **Request body:**
@@ -318,21 +322,21 @@ Send an email invitation to a new user (without an existing account). **Permissi
 
 ---
 
-### GET `/api/teams/{id}/invitations/`
+### GET `/api/v1/teams/{id}/invitations/`
 Get the list of invitations (pending + expired) for the team.
 
 **Response `200`:** Array of Invitation objects
 
 ---
 
-### DELETE `/api/teams/{id}/invitations/{invite_id}/`
+### DELETE `/api/v1/teams/{id}/invitations/{invite_id}/`
 Cancel an invitation.
 
 **Response `204`:** No content
 
 ---
 
-### GET `/api/invitations/{token}/accept/`
+### GET `/api/v1/invitations/{token}/accept/`
 Accept an invitation via the token in the email. **Auth required:** No (link-based)
 
 **Response `200`:**
@@ -350,7 +354,7 @@ Accept an invitation via the token in the email. **Auth required:** No (link-bas
 
 ## 3. Projects
 
-### GET `/api/projects/`
+### GET `/api/v1/projects/`
 Get list of projects.
 
 **Query params:**
@@ -371,7 +375,6 @@ Get list of projects.
     "task_type": "image_classification | object_detection | semantic_segmentation | instance_segmentation | keypoint_detection | video_annotation",
     "description": "string",
     "thumbnail": "http://... (presigned MinIO URL of first image, or null)",
-    "cvat_project_id": null,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
   }
@@ -380,7 +383,7 @@ Get list of projects.
 
 ---
 
-### POST `/api/projects/`
+### POST `/api/v1/projects/`
 Create a new project. The creator is automatically set as owner.
 
 **Request body:**
@@ -397,24 +400,24 @@ Create a new project. The creator is automatically set as owner.
 
 ---
 
-### GET `/api/projects/{id}/`
+### GET `/api/v1/projects/{id}/`
 Get project details.
 
 ---
 
-### PUT `/api/projects/{id}/`
+### PUT `/api/v1/projects/{id}/`
 Update project.
 
 **Request body:** Project fields (all required)
 
 ---
 
-### PATCH `/api/projects/{id}/`
+### PATCH `/api/v1/projects/{id}/`
 Partially update a project.
 
 ---
 
-### DELETE `/api/projects/{id}/`
+### DELETE `/api/v1/projects/{id}/`
 Delete project. **Permission required:** `projects.delete_project`
 
 **Response `204`:** No content
@@ -423,7 +426,7 @@ Delete project. **Permission required:** `projects.delete_project`
 
 ## 4. Datasets
 
-### GET `/api/datasets/`
+### GET `/api/v1/datasets/`
 Get list of datasets.
 
 **Query params:**
@@ -440,7 +443,6 @@ Get list of datasets.
     "version": 1,
     "media_count": 100,
     "thumbnail": "http://... (presigned MinIO URL or null)",
-    "cvat_task_id": null,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
   }
@@ -449,7 +451,7 @@ Get list of datasets.
 
 ---
 
-### POST `/api/datasets/`
+### POST `/api/v1/datasets/`
 Create a new dataset.
 
 **Request body:**
@@ -465,24 +467,24 @@ Create a new dataset.
 
 ---
 
-### GET `/api/datasets/{id}/`
+### GET `/api/v1/datasets/{id}/`
 Get dataset details.
 
 ---
 
-### PUT `/api/datasets/{id}/`
+### PUT `/api/v1/datasets/{id}/`
 Update dataset.
 
 ---
 
-### DELETE `/api/datasets/{id}/`
+### DELETE `/api/v1/datasets/{id}/`
 Delete dataset. **Permission required:** `datasets.delete_dataset`
 
 **Response `204`:** No content
 
 ---
 
-### GET `/api/datasets/{id}/media/`
+### GET `/api/v1/datasets/{id}/media/`
 Get list of media files in a dataset.
 
 **Response `200`:**
@@ -492,7 +494,7 @@ Get list of media files in a dataset.
     "id": 1,
     "dataset": 1,
     "type": "image | video",
-    "file": "string (MinIO object key, e.g. orgs/1_my-team/projects/1_my-project/datasets/1_dataset/v1/raw/photo.jpg)",
+    "file": "string (MinIO object key, e.g. users/7_admin/projects/1_project/datasets/1_dataset/v1/raw/photo.jpg)",
     "file_url": "http://... (presigned MinIO URL valid ~1 hour; or /media/... path when USE_MINIO=False)",
     "original_filename": "photo.jpg",
     "width": 1920,
@@ -506,7 +508,7 @@ Get list of media files in a dataset.
 
 ---
 
-### POST `/api/datasets/{id}/upload/`
+### POST `/api/v1/datasets/{id}/upload/`
 Upload a single file to a dataset. **Content-Type:** `multipart/form-data`
 
 **Permission required:** `datasets.upload_media`
@@ -518,12 +520,13 @@ Upload a single file to a dataset. **Content-Type:** `multipart/form-data`
 | `type` | string | Yes | `image` or `video` |
 | `metadata` | JSON | No | Additional metadata |
 
-**Response `201`:** Media object  
+**Response `202`:** Import accepted. Returns `accepted`, the refreshed dataset,
+and a persistent import job (`id`, `format`, `status`, `total`, `done`).
 **Response `409`:** File already exists (duplicate name)
 
 ---
 
-### POST `/api/datasets/{id}/upload-batch/`
+### POST `/api/v1/datasets/{id}/upload-batch/`
 Upload multiple files at once (max 100). **Content-Type:** `multipart/form-data`
 
 **Permission required:** `datasets.upload_media`
@@ -535,11 +538,116 @@ Upload multiple files at once (max 100). **Content-Type:** `multipart/form-data`
 | `type` | string | Yes |
 | `metadata` | JSON | No |
 
-**Response `201`:** Array of Media objects
+**Response `202`:** Import accepted with a persistent import job. Poll the
+dataset detail/list response field `latest_import_job` for progress or failure.
 
 ---
 
-### POST `/api/datasets/{id}/delete-media/`
+### POST `/api/v1/datasets/{id}/start-import/`
+Queue the import flow used by the dataset import dialog.
+
+**Content-Type:** `multipart/form-data`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `format` | string | Yes | `images`, `yolo26`, or `coco` |
+| `files` | file[] | Yes | Up to 500 image files, or one archive for archive formats |
+| `replace_existing` | boolean | No | For YOLO26, reuse same-name images and replace their annotations |
+| `video_extraction` | JSON string | No | Diverse frame extraction settings for video-only `images` imports |
+
+When `video_extraction.enabled=true`, every uploaded file must be a video. The
+dataset worker samples the full timeline and compares color distribution,
+spatial layout, and edge structure. It keeps one visually distinctive frame
+from each time region, so no detection model is required. Supported fields are:
+
+```json
+{
+  "enabled": true,
+  "target": 200,
+  "min_frame_difference": 0.15
+}
+```
+
+`min_frame_difference` is normalized from `0` to `1` and defaults to `0.15`.
+A candidate closer than this threshold to the selected visual descriptors is
+treated as a near-duplicate and skipped. The final output may therefore contain
+fewer images than `target`.
+
+The generated `Media(type=image)` rows include `source_video`,
+`timestamp_seconds`, and visual selection metrics in `metadata`. The worker
+internally compares eight candidates per requested output image.
+
+For MinIO deployments, large files should use the direct upload flow:
+
+1. `POST /api/v1/datasets/{id}/prepare-import/` with JSON file metadata.
+2. Upload each file to its returned presigned `PUT` URL.
+3. `POST /api/v1/datasets/{id}/import-jobs/{job_id}/commit/`.
+
+The commit endpoint verifies every staged object and then enqueues the import on
+the `datasets` worker. Use
+`POST /api/v1/datasets/{id}/import-jobs/{job_id}/abort/` after an interrupted
+upload. When MinIO is disabled, `prepare-import` returns
+`{"direct_upload": false}` and clients can use the multipart endpoint above.
+
+**Prepare request:**
+
+```json
+{
+  "format": "images",
+  "files": [
+    {"name": "camera.mp4", "size": 1062207488, "content_type": "video/mp4"}
+  ],
+  "video_extraction": {
+    "enabled": true,
+    "target": 200,
+    "min_frame_difference": 0.15
+  }
+}
+```
+
+The MinIO bucket CORS policy must allow browser `PUT` requests and the
+`Content-Type` header from every configured frontend origin. Presigned URLs
+expire after `DATASET_DIRECT_UPLOAD_EXPIRES` seconds (default: `3600`).
+
+**Response `202`:**
+
+```json
+{
+  "accepted": true,
+  "dataset": {},
+  "job": {
+    "id": 2,
+    "format": "yolo26",
+    "status": "queued",
+    "total": 1,
+    "done": 0
+  }
+}
+```
+
+With `USE_CELERY=True`, the job is sent explicitly to queue `datasets`. YOLO26
+archives must contain `data.yaml`; import errors are persisted in
+`latest_import_job.error`. When `replace_existing=true`, archive validation is
+completed before old annotations are deleted, existing MinIO objects are reused,
+and only new image names are uploaded. Unambiguous one-based class IDs are
+normalized to YOLO's zero-based class order.
+
+---
+
+### POST `/api/v1/datasets/{id}/import-archive/`
+Compatibility endpoint for one YOLO26 or COCO archive.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `format` | string | Yes | `yolo26` or `coco` |
+| `file` | file | Yes | One archive |
+| `replace_existing` | boolean | No | Same YOLO26 replacement behavior as `start-import` |
+
+**Response `202`:** Same queued job structure as `start-import`.
+
+---
+
+### POST `/api/v1/datasets/{id}/delete-media/`
 Delete multiple media files.
 
 **Permission required:** `datasets.upload_media`
@@ -561,8 +669,8 @@ Delete multiple media files.
 
 ---
 
-### GET `/api/datasets/{id}/stats/`
-Get dataset statistics (including CVAT task info).
+### GET `/api/v1/datasets/{id}/stats/`
+Get dataset image and annotation statistics.
 
 **Response `200`:**
 ```json
@@ -572,17 +680,17 @@ Get dataset statistics (including CVAT task info).
   "version": 1,
   "project_id": 1,
   "project_name": "string",
-  "cvat_task_id": null,
   "created_at": "2024-01-01T00:00:00Z",
   "updated_at": "2024-01-01T00:00:00Z",
-  "cvat": null
+  "size": 100,
+  "annotation_count": 250
 }
 ```
 
 ---
 
-### GET `/api/datasets/{id}/browser/`
-Get CVAT browser data (frames, labels, annotations).
+### GET `/api/v1/datasets/{id}/browser/`
+Get native dataset browser data (frames, labels, annotations).
 
 **Response `200`:**
 ```json
@@ -598,26 +706,41 @@ Get CVAT browser data (frames, labels, annotations).
 
 ---
 
-### GET `/api/datasets/{id}/frames/{frame_num}/`
+### GET `/api/v1/datasets/{id}/frames/{frame_num}/`
 Get the image for a frame by index (0-based).
 
 **Query params:**
 - `token` — JWT token (for `<img>` tags)
-- `quality` — `compressed` or `original` (CVAT mode)
 
-**Auth required:** No (use `?token=` query param)  
+**Auth required:** Yes (`Authorization: Bearer ...` or `?token=` query param)
 **Response `200`:** Binary image data
 
 ---
 
-### GET `/api/datasets/{id}/frames/{frame_num}/annotations/`
+### DELETE `/api/v1/datasets/{id}/frames/{frame_num}/delete/`
+Permanently delete the 0-based frame, its stored image/thumbnail, and its annotations.
+Requires the `datasets.upload_media` permission.
+
+**Response `200`:**
+```json
+{
+  "deleted": 1,
+  "media_id": 123,
+  "frame": 4,
+  "remaining": 168
+}
+```
+
+---
+
+### GET `/api/v1/datasets/{id}/frames/{frame_num}/annotations/`
 Get annotations for a frame.
 
 **Response `200`:** Array of Annotation objects
 
 ---
 
-### PUT `/api/datasets/{id}/frames/{frame_num}/annotations/`
+### PUT `/api/v1/datasets/{id}/frames/{frame_num}/annotations/`
 Save annotations for a frame (full overwrite).
 
 **Request body:**
@@ -639,81 +762,30 @@ Save annotations for a frame (full overwrite).
 
 ---
 
-### GET `/api/datasets/{id}/annotate_url/`
-Get URL to open the dataset directly in CVAT for annotation.
-
-**Response `200`:**
-```json
-{
-  "url": "http://cvat.example.com/tasks/123"
-}
-```
-
----
-
-### POST `/api/datasets/{id}/sync_cvat/`
-Sync annotations from CVAT to the database.
-
-**Response `200`:**
-```json
-{
-  "status": "synced",
-  "version": 2,
-  "cvat_status": "string",
-  "total_labels": 50
-}
-```
-
----
-
-### POST `/api/datasets/{id}/new_version/`
+### POST `/api/v1/datasets/{id}/new_version/`
 Increment the dataset version.
 
 **Response `200`:** Updated Dataset object
 
 ---
 
-### POST `/api/datasets/repair-cvat/`
-Repair datasets that lost their CVAT task link.
 
-**Response `200`:**
-```json
-{
-  "status": "ok",
-  "repaired_count": 2,
-  "repaired": [1, 5]
-}
-```
-
----
-
-### POST `/api/datasets/cvat-webhook/`
-Receive webhook events from CVAT. **Auth required:** No
-
-**Request body:**
-```json
-{
-  "event": "create:task | delete:task | update:task | update:job",
-  "task": { "id": 123, "name": "string", "project_id": 1 },
-  "job": { "task_id": 123 }
-}
-```
-
----
-
-### GET `/api/datasets/{dataset_id}/export/`
+### GET `/api/v1/datasets/{dataset_id}/export/`
 Export annotations to other formats.
 
 **Query params:**
-- `format` — `coco` (default), `yolo`, `voc`
+- `export_format` — `coco` (default), `yolo`, `voc`, `mask`, `coco_keypoints`, `imagenet`
+- `save_images` — include source images in the ZIP (`true`/`false`, default `false`)
 
-**Response `200`:** Binary file (JSON or ZIP)
+The legacy `format` query parameter remains supported for compatibility.
+
+**Response `200`:** ZIP archive (`application/zip`)
 
 ---
 
 ## 5. Annotations
 
-### GET `/api/classes/`
+### GET `/api/v1/classes/`
 Get list of class labels.
 
 **Query params:**
@@ -725,6 +797,7 @@ Get list of class labels.
   {
     "id": 1,
     "project": 1,
+    "index": 0,
     "name": "car",
     "color": "#ef4444",
     "attributes": {},
@@ -736,7 +809,7 @@ Get list of class labels.
 
 ---
 
-### POST `/api/classes/`
+### POST `/api/v1/classes/`
 Create a new class label.
 
 **Request body:**
@@ -751,26 +824,45 @@ Create a new class label.
 
 **Response `201`:** Class object
 
+New classes are appended to the project's zero-based model class order. The
+`index` field is read-only; use the reorder endpoint to change it.
+
 ---
 
-### GET `/api/classes/{id}/`
+### POST `/api/v1/classes/reorder/`
+Change the model class order for a project. The request must contain every
+current class exactly once.
+
+**Request body:**
+```json
+{
+  "project": 1,
+  "class_ids": [3, 1, 2]
+}
+```
+
+**Response `200`:** Class objects ordered by their updated zero-based `index`.
+
+---
+
+### GET `/api/v1/classes/{id}/`
 Get class details.
 
 ---
 
-### PUT/PATCH `/api/classes/{id}/`
+### PUT/PATCH `/api/v1/classes/{id}/`
 Update class.
 
 ---
 
-### DELETE `/api/classes/{id}/`
+### DELETE `/api/v1/classes/{id}/`
 Delete class.
 
 **Response `204`:** No content
 
 ---
 
-### GET `/api/annotations/`
+### GET `/api/v1/annotations/`
 Get list of annotations (filtered by team membership).
 
 **Query params:**
@@ -800,7 +892,7 @@ Get list of annotations (filtered by team membership).
 
 ---
 
-### POST `/api/annotations/`
+### POST `/api/v1/annotations/`
 Create a single annotation.
 
 **Request body:**
@@ -819,7 +911,7 @@ Create a single annotation.
 
 ---
 
-### POST `/api/annotations/bulk/`
+### POST `/api/v1/annotations/bulk/`
 Create multiple annotations at once.
 
 **Request body:**
@@ -835,7 +927,7 @@ Create multiple annotations at once.
 
 ---
 
-### DELETE `/api/annotations/bulk-delete/`
+### DELETE `/api/v1/annotations/bulk-delete/`
 Delete multiple annotations.
 
 **Request body:**
@@ -849,14 +941,14 @@ Delete multiple annotations.
 
 ---
 
-### GET `/api/media/{media_id}/annotations/`
+### GET `/api/v1/media/{media_id}/annotations/`
 Get all annotations for a media item.
 
 **Response `200`:** Array of Annotation objects
 
 ---
 
-### PUT `/api/media/{media_id}/annotations/`
+### PUT `/api/v1/media/{media_id}/annotations/`
 Save annotations for a media item (full overwrite — snapshot).
 
 **Request body:**
@@ -878,7 +970,7 @@ Save annotations for a media item (full overwrite — snapshot).
 
 ---
 
-### GET `/api/media/{media_id}/label-profile/`
+### GET `/api/v1/media/{media_id}/label-profile/`
 Get label profile (list of labels in use) for a media item.
 
 **Response `200`:**
@@ -892,7 +984,7 @@ Get label profile (list of labels in use) for a media item.
 
 ---
 
-### PUT `/api/media/{media_id}/label-profile/`
+### PUT `/api/v1/media/{media_id}/label-profile/`
 Save label profile for a media item.
 
 **Request body:**
@@ -908,14 +1000,14 @@ Save label profile for a media item.
 
 ---
 
-### GET `/api/datasets/{dataset_id}/frames/{frame_num}/label-profile/`
+### GET `/api/v1/datasets/{dataset_id}/frames/{frame_num}/label-profile/`
 Get label profile for a frame.
 
 **Response `200`:** `{ "labels": [...] }`
 
 ---
 
-### PUT `/api/datasets/{dataset_id}/frames/{frame_num}/label-profile/`
+### PUT `/api/v1/datasets/{dataset_id}/frames/{frame_num}/label-profile/`
 Save label profile for a frame.
 
 **Request body:** `{ "labels": [...] }`
@@ -924,7 +1016,7 @@ Save label profile for a frame.
 
 ---
 
-### GET `/api/media/{media_id}/quality/`
+### GET `/api/v1/media/{media_id}/quality/`
 Get annotation quality metrics (inter-annotator agreement) for a media item.
 
 **Response `200`:**
@@ -937,7 +1029,7 @@ Get annotation quality metrics (inter-annotator agreement) for a media item.
 
 ---
 
-### GET `/api/datasets/{dataset_id}/quality/`
+### GET `/api/v1/datasets/{dataset_id}/quality/`
 Get aggregated annotation quality metrics for an entire dataset.
 
 **Response `200`:**
@@ -955,7 +1047,7 @@ Get aggregated annotation quality metrics for an entire dataset.
 
 ---
 
-### GET `/api/tasks/` or `/api/jobs/`
+### GET `/api/v1/tasks/` or `/api/v1/jobs/`
 Get list of labeling tasks.
 
 **Query params:**
@@ -980,7 +1072,7 @@ Get list of labeling tasks.
 
 ---
 
-### POST `/api/tasks/`
+### POST `/api/v1/tasks/`
 Create a labeling task.
 
 **Request body:**
@@ -994,14 +1086,14 @@ Create a labeling task.
 
 ---
 
-### GET `/api/tasks/{id}/annotations/`
+### GET `/api/v1/tasks/{id}/annotations/`
 Get annotations for a task.
 
 **Response `200`:** Array of Annotation objects
 
 ---
 
-### PATCH `/api/tasks/{id}/annotations/`
+### PATCH `/api/v1/tasks/{id}/annotations/`
 Save annotations for a task.
 
 **Request body:**
@@ -1015,7 +1107,7 @@ Save annotations for a task.
 
 ---
 
-### GET `/api/tasks/{id}/issues/`
+### GET `/api/v1/tasks/{id}/issues/`
 Get list of issues for a task.
 
 **Response `200`:**
@@ -1034,7 +1126,7 @@ Get list of issues for a task.
 
 ---
 
-### POST `/api/tasks/{id}/issues/`
+### POST `/api/v1/tasks/{id}/issues/`
 Create an issue for a task.
 
 **Request body:**
@@ -1048,42 +1140,42 @@ Create an issue for a task.
 
 ---
 
-### POST `/api/tasks/{id}/start/`
+### POST `/api/v1/tasks/{id}/start/`
 Start a task (pending → in_progress), assigned to the current user.
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
-### POST `/api/tasks/{id}/complete/`
+### POST `/api/v1/tasks/{id}/complete/`
 Complete a task (in_progress → completed).
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
-### POST `/api/tasks/{id}/submit_for_review/`
+### POST `/api/v1/tasks/{id}/submit_for_review/`
 Submit a task for review (completed → review).
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
-### POST `/api/tasks/{id}/approve/`
+### POST `/api/v1/tasks/{id}/approve/`
 Approve a task (review → approved).
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
-### POST `/api/tasks/{id}/reject/`
+### POST `/api/v1/tasks/{id}/reject/`
 Reject a task (review → rejected).
 
 **Response `200`:** Updated LabelingTask object
 
 ---
 
-### GET `/api/reviews/`
+### GET `/api/v1/reviews/`
 Get list of reviews.
 
 **Query params:**
@@ -1107,7 +1199,7 @@ Get list of reviews.
 
 ---
 
-### POST `/api/reviews/`
+### POST `/api/v1/reviews/`
 Create a review for an annotation. The reviewer is automatically set to the current user.
 
 **Request body:**
@@ -1123,14 +1215,14 @@ Create a review for an annotation. The reviewer is automatically set to the curr
 
 ---
 
-### POST `/api/reviews/{id}/approve/`
+### POST `/api/v1/reviews/{id}/approve/`
 Approve a review.
 
 **Response `200`:** Updated Review object (`status: "approved"`)
 
 ---
 
-### POST `/api/reviews/{id}/reject/`
+### POST `/api/v1/reviews/{id}/reject/`
 Reject a review.
 
 **Request body:**
@@ -1144,7 +1236,7 @@ Reject a review.
 
 ---
 
-### POST `/api/reviews/{id}/request_revision/`
+### POST `/api/v1/reviews/{id}/request_revision/`
 Request revision.
 
 **Request body:**
@@ -1158,22 +1250,81 @@ Request revision.
 
 ---
 
+### Auto Label
+
+Auto Label is independent from **Run Model**. Run Model uses trained
+`ModelRegistry` artifacts; Auto Label uses a project-scoped imported model or a
+provider such as YOLO World and returns editable drafts for the current frame.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET`, `POST` | `/api/v1/auto-label/models/` | List/import project Auto Label models (`multipart/form-data`) |
+| `DELETE` | `/api/v1/auto-label/models/{id}/` | Remove an imported model and its artifact |
+| `GET` | `/api/v1/auto-label/providers/` | List provider capabilities and model variants |
+| `POST` | `/api/v1/datasets/{dataset_id}/frames/{frame_num}/predict/` | Predict editable bbox/polygon drafts for one frame |
+| `POST` | `/api/v1/datasets/{dataset_id}/auto-label/` | Queue Auto Label for every dataset image |
+| `GET` | `/api/v1/datasets/{dataset_id}/auto-label/jobs/{job_id}/` | Read dataset job progress and result counts |
+
+Imported model prediction source:
+
+```json
+{
+  "source": {"kind": "uploaded_model", "model_id": 12},
+  "output_type": "bbox",
+  "confidence": 0.25,
+  "create_missing_classes": false
+}
+```
+
+YOLO World prediction source:
+
+```json
+{
+  "source": {
+    "kind": "provider",
+    "provider": "yolo_world",
+    "model": "yolov8s-worldv2",
+    "prompts": ["person", "forklift", "pallet"]
+  },
+  "output_type": "bbox",
+  "confidence": 0.25,
+  "create_missing_classes": false
+}
+```
+
+The frame prediction endpoint does not save annotations. The dataset Auto Label
+endpoint runs in the `datasets` worker, saves model annotations in batches, maps
+only existing project classes, replaces previous output from the same imported
+model, and preserves manual annotations. YOLO World currently advertises bbox
+output only.
+
+---
+
 ## 6. Training
 
-### GET `/api/architectures/`
+### GET `/api/v1/architectures/`
 Get list of model architectures.
+
+By default the catalog returns active architectures for new training runs.
+Use `?include_inactive=true` when resolving the original architecture of a
+completed legacy run for fine-tuning.
 
 **Response `200`:**
 ```json
 [
   {
     "id": 1,
-    "name": "YOLOv8",
-    "backbone": "CSPDarknet",
+    "name": "YOLO26 Detection - Small",
+    "backbone": "yolo26",
     "task_type": "object_detection | image_classification | semantic_segmentation | instance_segmentation | keypoint_detection",
     "description": "string",
-    "default_config": {},
+    "default_config": {
+      "architecture": "yolo26",
+      "size": "s",
+      "checkpoint": "yolo26s.pt"
+    },
     "is_builtin": true,
+    "is_active": true,
     "created_at": "2024-01-01T00:00:00Z"
   }
 ]
@@ -1181,7 +1332,7 @@ Get list of model architectures.
 
 ---
 
-### POST `/api/architectures/`
+### POST `/api/v1/architectures/`
 Create a new architecture. **Permission required:** Admin only
 
 **Request body:**
@@ -1199,7 +1350,7 @@ Create a new architecture. **Permission required:** Admin only
 
 ---
 
-### GET `/api/training-jobs/`
+### GET `/api/v1/training-jobs/`
 Get list of training jobs.
 
 **Response `200`:**
@@ -1209,27 +1360,42 @@ Get list of training jobs.
     "id": 1,
     "project": 1,
     "dataset": 1,
+    "dataset_ids": [1, 2, 3],
     "architecture": 1,
-    "architecture_name": "YOLOv8",
+    "architecture_name": "YOLO26 Detection - Small",
+    "initialization_mode": "architecture | fine_tune",
+    "parent_job": null,
+    "parent_job_name": null,
+    "base_model": null,
+    "base_model_name": null,
     "created_by": 1,
     "created_by_username": "string",
     "name": "Training Run #1",
     "status": "pending | queued | running | completed | failed | cancelled",
-    "hyperparams": { "epochs": 100, "lr": 0.001 },
-    "augmentation_config": {},
+    "hyperparams": { "epochs": 100, "batch": 16, "lr": 0.001 },
     "error_message": null,
+    "artifact_urls": {},
     "started_at": null,
     "finished_at": null,
     "created_at": "2024-01-01T00:00:00Z",
-    "updated_at": "2024-01-01T00:00:00Z",
     "experiment_count": 0
   }
 ]
 ```
 
+The list response omits the detail-only `class_schema`, `augmentation_config`,
+raw `artifacts`, and `updated_at` fields. Use `GET /api/v1/training-jobs/{id}/`
+when those fields are required.
+
 ---
 
-### POST `/api/training-jobs/`
+### GET `/api/v1/training-jobs/{id}/`
+Get one training job. The response includes all list fields plus
+`class_schema`, `augmentation_config`, raw `artifacts`, and `updated_at`.
+
+---
+
+### POST `/api/v1/training-jobs/`
 Create a new training job.
 
 **Request body:**
@@ -1237,32 +1403,50 @@ Create a new training job.
 {
   "project": 1,
   "dataset": 1,
+  "dataset_ids": [1, 2, 3],
   "architecture": 1,
+  "initialization_mode": "fine_tune",
+  "base_model": 17,
   "name": "string",
-  "hyperparams": { "epochs": 100, "lr": 0.001 },
+  "hyperparams": { "epochs": 100, "batch": 16, "imgsz": 640, "lr": 0.001 },
   "augmentation_config": {}
 }
 ```
+
+`dataset_ids` accepts one or more verified, generated datasets from the same
+project. `dataset` remains the first selected dataset for backward compatibility.
+The training payload combines each dataset's train/validation/test split.
+
+`batch` is the canonical batch-size key. New requests do not accept
+`batch_size`; the GPU payload adapter only retains that alias for existing jobs.
+`device` accepts a GPU index, a comma-separated GPU index list, `cpu`, or `mps`.
+
+Set `initialization_mode` to `fine_tune` and pass a `base_model` registry ID to
+start from a previous run's `best.pt`. The source registry entry must be
+PyTorch, belong to a completed run in the same project, use the same
+architecture, and have a compatible ordered class schema. Django derives
+`parent_job`; clients cannot set it directly. Omit both fields, or use
+`initialization_mode: "architecture"`, for a normal run.
 
 **Response `201`:** TrainingJob object
 
 ---
 
-### POST `/api/training-jobs/{id}/start/`
+### POST `/api/v1/training-jobs/{id}/start/`
 Start a training job (enqueue Celery task). **Permission required:** `training.start_job`
 
 **Response `200`:** Updated TrainingJob object (`status: "queued"`)
 
 ---
 
-### POST `/api/training-jobs/{id}/stop/`
+### POST `/api/v1/training-jobs/{id}/stop/`
 Stop a training job. **Permission required:** `training.start_job`
 
 **Response `200`:** Updated TrainingJob object (`status: "cancelled"`)
 
 ---
 
-### GET `/api/training-jobs/{id}/experiments/`
+### GET `/api/v1/training-jobs/{id}/experiments/`
 Get list of experiments for a training job.
 
 **Response `200`:**
@@ -1281,12 +1465,12 @@ Get list of experiments for a training job.
 
 ---
 
-### GET `/api/experiments/`
+### GET `/api/v1/experiments/`
 Get all experiments.
 
 ---
 
-### GET `/api/experiments/{id}/metrics/`
+### GET `/api/v1/experiments/{id}/metrics/`
 Get per-epoch metrics for an experiment.
 
 **Response `200`:**
@@ -1313,7 +1497,7 @@ Get per-epoch metrics for an experiment.
 
 ## 7. Deployments
 
-### GET `/api/registry/`
+### GET `/api/v1/registry/`
 Get list of model registry entries.
 
 **Response `200`:**
@@ -1322,7 +1506,7 @@ Get list of model registry entries.
   {
     "id": 1,
     "training_job": 1,
-    "name": "YOLOv8 v1.0",
+    "name": "YOLO26 Small v1.0",
     "version": 1,
     "format": "onnx | pytorch | tensorflow",
     "model_file": "http://... (presigned URL from visiox-artifacts MinIO bucket; path: training-jobs/{job_id}/weights/{filename})",
@@ -1340,7 +1524,7 @@ Get list of model registry entries.
 
 ---
 
-### POST `/api/registry/`
+### POST `/api/v1/registry/`
 Register a new model. **Content-Type:** `multipart/form-data`
 
 **Request body (form-data):**
@@ -1357,7 +1541,7 @@ Register a new model. **Content-Type:** `multipart/form-data`
 
 ---
 
-### POST `/api/registry/{id}/rollback/`
+### POST `/api/v1/registry/{id}/rollback/`
 Roll back to the previous version.
 
 **Response `200`:**
@@ -1370,7 +1554,56 @@ Roll back to the previous version.
 
 ---
 
-### GET `/api/endpoints/`
+### POST `/api/v1/registry/{id}/predict-dataset/`
+Run a registered model through the configured inference agent and return preview
+predictions without changing annotations.
+
+```json
+{
+  "dataset": 32,
+  "media_ids": [4546, 4545],
+  "confidence": 0.25
+}
+```
+
+### POST `/api/v1/registry/{id}/preview-frame/`
+Run inference for exactly one dataset frame and return canvas-ready bounding
+boxes without saving annotations. The Train page uses this endpoint for **Try
+Model** comparison mode.
+
+```json
+{
+  "dataset": 32,
+  "frame": 0,
+  "confidence": 0.25
+}
+```
+
+The response maps prediction label names to existing project class IDs. Unknown
+labels are reported in `unmapped_labels` and are not drawn as ground truth.
+Predictions are read-only overlays; saving the annotation editor does not
+persist them.
+
+### POST `/api/v1/registry/{id}/label-dataset/`
+Run inference and persist predictions as bounding-box annotations. Existing
+manual annotations are preserved. Re-running the same registry model replaces
+only annotations previously created by that model for the requested images.
+
+```json
+{
+  "dataset": 32,
+  "media_ids": [4546, 4545],
+  "confidence": 0.25
+}
+```
+
+If `media_ids` is omitted, all original images in the dataset are processed.
+The response reports `processed_images`, `labeled_images`, `saved_annotations`,
+and `skipped_predictions`.
+
+---
+
+### GET `/api/v1/endpoints/`
 Get list of inference endpoints.
 
 **Response `200`:**
@@ -1395,7 +1628,7 @@ Get list of inference endpoints.
 
 ---
 
-### POST `/api/endpoints/`
+### POST `/api/v1/endpoints/`
 Create a new inference endpoint. Auth token is generated automatically.
 
 **Request body:**
@@ -1413,21 +1646,21 @@ Create a new inference endpoint. Auth token is generated automatically.
 
 ---
 
-### POST `/api/endpoints/{id}/start/`
+### POST `/api/v1/endpoints/{id}/start/`
 Activate endpoint. **Permission required:** `deployments.start_endpoint`
 
 **Response `200`:** Updated endpoint (`status: "active"`)
 
 ---
 
-### POST `/api/endpoints/{id}/stop/`
+### POST `/api/v1/endpoints/{id}/stop/`
 Stop endpoint. **Permission required:** `deployments.stop_endpoint`
 
 **Response `200`:** Updated endpoint (`status: "inactive"`)
 
 ---
 
-### POST `/api/endpoints/{id}/log_prediction/`
+### POST `/api/v1/endpoints/{id}/log_prediction/`
 Log a single inference event.
 
 **Request body:**
@@ -1443,7 +1676,7 @@ Log a single inference event.
 
 ---
 
-### GET `/api/endpoints/{id}/logs/`
+### GET `/api/v1/endpoints/{id}/logs/`
 Get the 100 most recent logs.
 
 **Response `200`:**
@@ -1464,7 +1697,7 @@ Get the 100 most recent logs.
 
 ---
 
-### GET `/api/endpoints/{id}/alerts/`
+### GET `/api/v1/endpoints/{id}/alerts/`
 Get list of unresolved drift alerts.
 
 **Response `200`:**
@@ -1487,7 +1720,7 @@ Get list of unresolved drift alerts.
 
 ---
 
-### POST `/api/endpoints/{id}/trigger_drift_check/`
+### POST `/api/v1/endpoints/{id}/trigger_drift_check/`
 Trigger a drift check (Celery task).
 
 **Response `200`:**
@@ -1500,22 +1733,22 @@ Trigger a drift check (Celery task).
 
 ---
 
-### GET `/api/monitoring/`
+### GET `/api/v1/monitoring/`
 Get all monitoring logs.
 
 ---
 
-### GET `/api/drift-alerts/`
+### GET `/api/v1/drift-alerts/`
 Get all drift alerts.
 
 ---
 
-### PATCH `/api/drift-alerts/{id}/`
+### PATCH `/api/v1/drift-alerts/{id}/`
 Update a drift alert.
 
 ---
 
-### POST `/api/drift-alerts/{id}/resolve/`
+### POST `/api/v1/drift-alerts/{id}/resolve/`
 Mark an alert as resolved.
 
 **Response `200`:** Updated DriftAlert object (`is_resolved: true`, `resolved_at` set)
@@ -1524,7 +1757,7 @@ Mark an alert as resolved.
 
 ## 8. Billing
 
-### GET `/api/plans/`
+### GET `/api/v1/plans/`
 Get list of plans.
 
 **Response `200`:**
@@ -1547,7 +1780,7 @@ Get list of plans.
 
 ---
 
-### POST `/api/subscriptions/subscribe/`
+### POST `/api/v1/subscriptions/subscribe/`
 Subscribe a team to a plan (Stripe integration).
 
 **Request body:**
@@ -1577,7 +1810,7 @@ Subscribe a team to a plan (Stripe integration).
 
 ---
 
-### GET `/api/subscriptions/my_subscription/`
+### GET `/api/v1/subscriptions/my_subscription/`
 Get the current subscription.
 
 **Query params:**
@@ -1587,7 +1820,7 @@ Get the current subscription.
 
 ---
 
-### POST `/api/subscriptions/cancel/`
+### POST `/api/v1/subscriptions/cancel/`
 Cancel subscription.
 
 **Request body:**
@@ -1601,7 +1834,7 @@ Cancel subscription.
 
 ---
 
-### GET `/api/usage/`
+### GET `/api/v1/usage/`
 Get usage records for the team.
 
 **Response `200`:**
@@ -1619,7 +1852,7 @@ Get usage records for the team.
 
 ---
 
-### GET `/api/api-keys/`
+### GET `/api/v1/api-keys/`
 Get list of API keys.
 
 **Response `200`:**
@@ -1640,7 +1873,7 @@ Get list of API keys.
 
 ---
 
-### POST `/api/api-keys/`
+### POST `/api/v1/api-keys/`
 Create a new API key. **The full key is shown only once at creation.**
 
 **Request body:**
@@ -1666,14 +1899,14 @@ Create a new API key. **The full key is shown only once at creation.**
 
 ---
 
-### POST `/api/api-keys/{id}/revoke/`
+### POST `/api/v1/api-keys/{id}/revoke/`
 Revoke an API key.
 
 **Response `204`:** No content
 
 ---
 
-### GET `/api/webhooks/`
+### GET `/api/v1/webhooks/`
 Get list of webhooks.
 
 **Response `200`:**
@@ -1693,7 +1926,7 @@ Get list of webhooks.
 
 ---
 
-### POST `/api/webhooks/`
+### POST `/api/v1/webhooks/`
 Create a new webhook.
 
 **Request body:**
@@ -1710,19 +1943,19 @@ Create a new webhook.
 
 ---
 
-### PUT/PATCH `/api/webhooks/{id}/`
+### PUT/PATCH `/api/v1/webhooks/{id}/`
 Update webhook.
 
 ---
 
-### DELETE `/api/webhooks/{id}/`
+### DELETE `/api/v1/webhooks/{id}/`
 Delete webhook.
 
 **Response `204`:** No content
 
 ---
 
-### POST `/api/webhooks/{id}/test/`
+### POST `/api/v1/webhooks/{id}/test/`
 Send a test event to the webhook.
 
 **Response `200`:**
@@ -1735,7 +1968,7 @@ Send a test event to the webhook.
 
 ---
 
-### POST `/api/webhooks/stripe/`
+### POST `/api/v1/webhooks/stripe/`
 Stripe webhook endpoint (validated via `Stripe-Signature` header).
 
 **Auth required:** No
@@ -1744,7 +1977,7 @@ Stripe webhook endpoint (validated via `Stripe-Signature` header).
 
 ## 9. Dataverse
 
-### GET `/api/dataverse/`
+### GET `/api/v1/dataverse/`
 Get list of public projects in Dataverse.
 
 **Query params:**
@@ -1780,14 +2013,14 @@ Get list of public projects in Dataverse.
 
 ---
 
-### GET `/api/dataverse/{id}/`
+### GET `/api/v1/dataverse/{id}/`
 Get public project details. Automatically increments `view_count`.
 
 **Response `200`:** DataverseProject object
 
 ---
 
-### POST `/api/dataverse/share-project/`
+### POST `/api/v1/dataverse/share-project/`
 Share a project to Dataverse.
 
 **Request body:**
@@ -1806,7 +2039,7 @@ Share a project to Dataverse.
 
 ---
 
-### POST `/api/dataverse/{id}/fork/`
+### POST `/api/v1/dataverse/{id}/fork/`
 Fork a public project into your team. Copies all classes, datasets, media, and annotations.
 
 **Request body:**
@@ -1875,7 +2108,7 @@ All list endpoints support pagination (`PageNumberPagination`, default page size
 ```json
 {
   "count": 150,
-  "next": "http://localhost:8000/api/datasets/?page=2",
+  "next": "http://localhost:8000/api/v1/datasets/?page=2",
   "previous": null,
   "results": [...]
 }
@@ -1885,7 +2118,7 @@ All list endpoints support pagination (`PageNumberPagination`, default page size
 
 ## Webhook Events
 
-Events are sent via outbound webhooks (`POST /api/webhooks/`) with header `X-Visiox-Signature: <HMAC-SHA256>`.
+Events are sent via outbound webhooks (`POST /api/v1/webhooks/`) with header `X-Visiox-Signature: <HMAC-SHA256>`.
 
 | Event | Trigger |
 |---|---|

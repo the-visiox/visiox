@@ -13,6 +13,13 @@ from annotations.serializers import (
     JobIssueSerializer,
     LabelingTaskSerializer,
 )
+from core.access import project_access_q
+
+
+def _enqueue_dataset_label_cache_clear(dataset_id: int) -> None:
+    from datasets.tasks import enqueue_dataset_label_cache_clear
+
+    enqueue_dataset_label_cache_clear(dataset_id)
 
 
 class LabelingTaskViewSet(viewsets.ModelViewSet):
@@ -22,7 +29,7 @@ class LabelingTaskViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = LabelingTask.objects.filter(
-            media__dataset__project__team__members__user=user
+            project_access_q(user, 'media__dataset__project__')
         ).distinct().select_related('media', 'assigned_to')
 
         task_status = self.request.query_params.get('status')
@@ -81,6 +88,11 @@ class LabelingTaskViewSet(viewsets.ModelViewSet):
                     for item in items
                 ]
             )
+            if (media.metadata or {}).get('category') != 'augmented':
+                media.dataset.invalidate_training_verification()
+                transaction.on_commit(
+                    lambda dataset_id=media.dataset_id: _enqueue_dataset_label_cache_clear(dataset_id)
+                )
         qs = Annotation.objects.filter(media=media).select_related('class_label', 'annotator')
         return Response(AnnotationSerializer(qs, many=True).data)
 
@@ -134,7 +146,10 @@ class LabelingTaskViewSet(viewsets.ModelViewSet):
     def submit_for_review(self, request, pk=None):
         task = self.get_object()
         if task.status != 'completed':
-            return Response({'error': 'Only completed tasks can be submitted for review.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Only completed tasks can be submitted for review.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         task.status = 'review'
         task.save()
         return Response(LabelingTaskSerializer(task, context={'request': request}).data)

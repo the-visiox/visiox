@@ -1,7 +1,6 @@
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from core.permissions import HasPerm
@@ -105,7 +104,10 @@ class TeamViewSet(viewsets.ModelViewSet):
                 send_invitation_email(invitation)
             except Exception:
                 invitation.delete()
-                return Response({'error': 'Failed to send invitation email.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                return Response(
+                    {'error': 'Failed to send invitation email.'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
             return Response(InvitationSerializer(invitation).data, status=status.HTTP_201_CREATED)
 

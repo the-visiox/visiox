@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from projects.models import Project
-from teams.models import Team
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -22,6 +21,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             'name',
             'task_type',
             'description',
+            'is_public',
             'thumbnail',
             'created_at',
             'updated_at'
@@ -57,7 +57,8 @@ class ProjectCreateSerializer(serializers.ModelSerializer):
             'team',
             'name',
             'task_type',
-            'description'
+            'description',
+            'is_public',
         ]
         extra_kwargs = {
             'team': {'required': False, 'allow_null': True},

@@ -8,8 +8,9 @@ class ClassSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Class
-        fields = ['id', 'project', 'name', 'color', 'attributes', 'annotation_count', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        fields = ['id', 'project', 'index', 'name', 'color', 'attributes', 'annotation_count', 'created_at']
+        read_only_fields = ['id', 'index', 'created_at']
 
     def get_annotation_count(self, obj) -> int:
-        return obj.annotations.count()
+        annotated_count = getattr(obj, 'annotation_count_value', None)
+        return annotated_count if annotated_count is not None else obj.annotations.count()

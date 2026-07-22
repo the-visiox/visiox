@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-55!^nxpq^_oaw(-$+ey1ahk&l1zdh^jt#h9^g8duk3!ay0evt7')
 
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
+ENABLE_SILK = DEBUG and os.getenv('ENABLE_SILK', 'false').lower() in ('1', 'true', 'yes')
 
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
@@ -35,8 +36,8 @@ INSTALLED_APPS = [
     'dataverse',
     'training',
     'deployments',
+    'auto_label',
     'billing',
-    'silk',
     'corsheaders',
     'django_celery_beat',
 ]
@@ -50,8 +51,11 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'silk.middleware.SilkyMiddleware',
 ]
+
+if ENABLE_SILK:
+    INSTALLED_APPS.append('silk')
+    MIDDLEWARE.append('silk.middleware.SilkyMiddleware')
 
 ROOT_URLCONF = 'visiox.urls'
 
@@ -84,6 +88,11 @@ DATABASES = {
         'OPTIONS': {
             'connect_timeout': int(os.getenv('DATABASE_CONNECT_TIMEOUT', '5')),
         },
+        # Persistent connections: reuse across requests instead of opening a new
+        # one each time. With many web replicas, put PgBouncer in front and keep
+        # this modest. 0 = close after each request (default).
+        'CONN_MAX_AGE': int(os.getenv('DATABASE_CONN_MAX_AGE', '60')),
+        'CONN_HEALTH_CHECKS': True,
     },
 }
 
@@ -104,6 +113,11 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# Dataset imports accept up to 500 files in one multipart request. Django's
+# default limit is 100, which rejects larger imports before DRF can validate
+# them and only returns a generic "Bad Request" response.
+DATA_UPLOAD_MAX_NUMBER_FILES = int(os.getenv('DATA_UPLOAD_MAX_NUMBER_FILES', '600'))
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -139,6 +153,18 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '60/min',
+        'user': '300/min',
+        'login': '5/min',
+        'register': '3/min',
+        'token_refresh': '10/min',
+    },
+    'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler',
 }
 
 SIMPLE_JWT = {
@@ -168,12 +194,43 @@ SPECTACULAR_SETTINGS = {
 }
 
 # Celery
+# When True, long jobs (augmentation) are dispatched to Celery workers; otherwise
+# they run in a background thread (fine for the dev server). Turn on in production.
+USE_CELERY = os.getenv('USE_CELERY', 'False') == 'True'
+# Keep Auto Label runnable from the API host until the dedicated datasets
+# worker has been deployed with the auto_label task. Enable explicitly after
+# that worker is updated.
+AUTO_LABEL_USE_CELERY = os.getenv('AUTO_LABEL_USE_CELERY', 'False') == 'True'
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
+
+# Dataset imports use a small thread pool only for storage I/O. ORM writes stay
+# on the Celery task thread. Keep this bounded to avoid overwhelming MinIO.
+DATASET_IMPORT_STORAGE_WORKERS = int(os.getenv('DATASET_IMPORT_STORAGE_WORKERS', '4'))
+DATASET_IMPORT_BATCH_SIZE = int(os.getenv('DATASET_IMPORT_BATCH_SIZE', '16'))
+DATASET_DIRECT_UPLOAD_EXPIRES = int(os.getenv('DATASET_DIRECT_UPLOAD_EXPIRES', '3600'))
+
+# GPU training agent. The callback URL must be reachable from the GPU host
+# (use the API container/LAN address, never localhost in production).
+TRAINING_AGENT_URL = os.getenv('TRAINING_AGENT_URL', 'http://localhost:8002').rstrip('/')
+TRAINING_AGENT_TOKEN = os.getenv('TRAINING_AGENT_TOKEN', '')
+TRAINING_CALLBACK_TOKEN = os.getenv('TRAINING_CALLBACK_TOKEN', '')
+TRAINING_CALLBACK_BASE_URL = os.getenv(
+    'TRAINING_CALLBACK_BASE_URL', 'http://localhost:8000'
+).rstrip('/')
+TRAINING_AGENT_TIMEOUT = int(os.getenv('TRAINING_AGENT_TIMEOUT', '15'))
+TRAINING_LABEL_DELIVERY = os.getenv(
+    'TRAINING_LABEL_DELIVERY',
+    os.getenv('TRAINING_LABEL_SOURCE', 'minio'),
+).lower()
+TRAINING_LABEL_SOURCE = TRAINING_LABEL_DELIVERY
+TRAINING_AGENT_MINIO_ENDPOINT = os.getenv('TRAINING_AGENT_MINIO_ENDPOINT', '').rstrip('/')
+INFERENCE_API_URL = os.getenv('INFERENCE_API_URL', '').rstrip('/')
+INFERENCE_AGENT_TOKEN = os.getenv('INFERENCE_AGENT_TOKEN') or TRAINING_AGENT_TOKEN
 
 # Storage — local by default, switch to MinIO via env
 USE_MINIO = os.getenv('USE_MINIO', 'False') == 'True'

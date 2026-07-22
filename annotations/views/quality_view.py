@@ -5,6 +5,7 @@ from rest_framework import status
 
 from annotations.services.quality import media_agreement
 from datasets.models import Dataset, Media
+from core.access import project_access_q
 
 
 class MediaQualityView(APIView):
@@ -15,8 +16,8 @@ class MediaQualityView(APIView):
     def get(self, request, media_id):
         try:
             media = Media.objects.select_related('dataset__project').get(
+                project_access_q(request.user, 'dataset__project__'),
                 pk=media_id,
-                dataset__project__team__members__user=request.user,
             )
         except Media.DoesNotExist:
             return Response({'error': 'Media not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -33,8 +34,8 @@ class DatasetQualityView(APIView):
     def get(self, request, dataset_id):
         try:
             dataset = Dataset.objects.select_related('project').get(
+                project_access_q(request.user, 'project__'),
                 pk=dataset_id,
-                project__team__members__user=request.user,
             )
         except Dataset.DoesNotExist:
             return Response({'error': 'Dataset not found.'}, status=status.HTTP_404_NOT_FOUND)

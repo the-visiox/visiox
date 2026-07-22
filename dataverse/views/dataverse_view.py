@@ -110,7 +110,11 @@ class DataverseProjectViewSet(
                 attributes=class_label.attributes,
             )
 
-        for source_dataset in source.datasets.all().prefetch_related('media_files__annotations', 'media_files__label_profile'):
+        source_datasets = source.datasets.all().prefetch_related(
+            'media_files__annotations',
+            'media_files__label_profile',
+        )
+        for source_dataset in source_datasets:
             forked_dataset = Dataset.objects.create(
                 project=forked_project,
                 name=source_dataset.name,

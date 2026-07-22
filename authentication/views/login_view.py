@@ -5,11 +5,13 @@ from rest_framework.permissions import AllowAny
 
 from authentication.serializers import LoginSerializer
 from authentication.services import AuthenticationService
+from authentication.throttles import LoginRateThrottle
 
 
 class LoginView(views.APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [LoginRateThrottle]
     serializer_class = LoginSerializer
 
     @extend_schema(request=LoginSerializer, responses={200: dict})
