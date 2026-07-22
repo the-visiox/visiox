@@ -563,13 +563,51 @@ from each time region, so no detection model is required. Supported fields are:
 ```json
 {
   "enabled": true,
-  "target": 200
+  "target": 200,
+  "min_frame_difference": 0.15
 }
 ```
+
+`min_frame_difference` is normalized from `0` to `1` and defaults to `0.15`.
+A candidate closer than this threshold to the selected visual descriptors is
+treated as a near-duplicate and skipped. The final output may therefore contain
+fewer images than `target`.
 
 The generated `Media(type=image)` rows include `source_video`,
 `timestamp_seconds`, and visual selection metrics in `metadata`. The worker
 internally compares eight candidates per requested output image.
+
+For MinIO deployments, large files should use the direct upload flow:
+
+1. `POST /api/v1/datasets/{id}/prepare-import/` with JSON file metadata.
+2. Upload each file to its returned presigned `PUT` URL.
+3. `POST /api/v1/datasets/{id}/import-jobs/{job_id}/commit/`.
+
+The commit endpoint verifies every staged object and then enqueues the import on
+the `datasets` worker. Use
+`POST /api/v1/datasets/{id}/import-jobs/{job_id}/abort/` after an interrupted
+upload. When MinIO is disabled, `prepare-import` returns
+`{"direct_upload": false}` and clients can use the multipart endpoint above.
+
+**Prepare request:**
+
+```json
+{
+  "format": "images",
+  "files": [
+    {"name": "camera.mp4", "size": 1062207488, "content_type": "video/mp4"}
+  ],
+  "video_extraction": {
+    "enabled": true,
+    "target": 200,
+    "min_frame_difference": 0.15
+  }
+}
+```
+
+The MinIO bucket CORS policy must allow browser `PUT` requests and the
+`Content-Type` header from every configured frontend origin. Presigned URLs
+expire after `DATASET_DIRECT_UPLOAD_EXPIRES` seconds (default: `3600`).
 
 **Response `202`:**
 

@@ -2,7 +2,7 @@ import threading
 import time
 import zipfile
 from io import BytesIO
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -12,6 +12,7 @@ from django.test import SimpleTestCase, override_settings
 from datasets.views.dataset_view import (
     _dataset_import_batch_size,
     _dataset_import_storage_workers,
+    _direct_upload_url,
     _duplicate_names_error,
     _yolo_image_name_map,
     _read_yolo_label_rows,
@@ -56,14 +57,42 @@ class _FakeMedia:
 
 
 class DatasetImportStorageTests(SimpleTestCase):
+    @override_settings(USE_MINIO=True, DATASET_DIRECT_UPLOAD_EXPIRES=900)
+    @patch('datasets.views.dataset_view.default_storage')
+    def test_direct_upload_url_presigns_staging_put(self, storage):
+        storage._normalize_name.return_value = 'prefix/import-staging/video.mp4'
+        storage.bucket_name = 'visiox-media'
+        storage.connection.meta.client.generate_presigned_url.return_value = 'https://storage/upload'
+
+        upload_url = _direct_upload_url('import-staging/video.mp4', 'video/mp4')
+
+        self.assertEqual(upload_url, 'https://storage/upload')
+        storage.connection.meta.client.generate_presigned_url.assert_called_once_with(
+            'put_object',
+            Params={
+                'Bucket': 'visiox-media',
+                'Key': 'prefix/import-staging/video.mp4',
+                'ContentType': 'video/mp4',
+            },
+            ExpiresIn=900,
+        )
+
     def test_video_extraction_config_uses_safe_defaults(self):
         config = normalize_video_extraction_config({'enabled': True, 'target': 120})
 
-        self.assertEqual(config, {'enabled': True, 'target': 120})
+        self.assertEqual(config, {
+            'enabled': True,
+            'target': 120,
+            'min_frame_difference': 0.15,
+        })
 
     def test_video_extraction_config_rejects_invalid_target(self):
         with self.assertRaisesRegex(ValueError, 'target'):
             normalize_video_extraction_config({'enabled': True, 'target': 0})
+
+    def test_video_extraction_config_rejects_invalid_difference(self):
+        with self.assertRaisesRegex(ValueError, 'min_frame_difference'):
+            normalize_video_extraction_config({'min_frame_difference': 1.1})
 
     def test_video_timestamps_cover_each_target_bin(self):
         timestamps = build_timestamps(duration=100.0, target=5, candidates_per_target=3)
@@ -84,6 +113,21 @@ class DatasetImportStorageTests(SimpleTestCase):
 
         self.assertEqual([candidate.timestamp for candidate in selected], [2.0, 8.0])
         self.assertGreater(descriptor_distance((1.0, 0.0), (-1.0, 0.0)), 0.9)
+
+    def test_video_selection_removes_frames_below_difference_threshold(self):
+        candidates = [
+            Candidate(1.0, 0, (1.0, 0.0), 100, 100, 0.9),
+            Candidate(2.0, 1, (0.999, 0.001), 100, 100, 0.9),
+            Candidate(3.0, 2, (0.0, 1.0), 100, 100, 0.9),
+        ]
+
+        selected = select_diverse_candidates(
+            candidates,
+            target=3,
+            min_frame_difference=0.15,
+        )
+
+        self.assertEqual([candidate.timestamp for candidate in selected], [1.0, 3.0])
 
     def test_multipart_parser_accepts_169_image_files(self):
         self.assertGreaterEqual(settings.DATA_UPLOAD_MAX_NUMBER_FILES, 500)

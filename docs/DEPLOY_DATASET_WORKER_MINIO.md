@@ -186,7 +186,15 @@ DATASET_IMPORT_BATCH_SIZE=24
 
 Video frame extraction runs inside `worker-datasets` using OpenCV and NumPy.
 It compares color, layout, and edge descriptors and does not require a model,
-GPU, or separate ML checkpoint.
+GPU, or separate ML checkpoint. The default minimum visual difference is 15%;
+frames below that threshold are treated as near-duplicates.
+
+Large browser uploads bypass the Django API and use presigned MinIO `PUT` URLs.
+Configure bucket CORS to allow `PUT` and the `Content-Type` header from the
+frontend origins, and ensure the `MINIO_ENDPOINT` configured on the API host is
+reachable from user browsers (do not presign an internal Docker-only hostname).
+Set `DATASET_DIRECT_UPLOAD_EXPIRES=3600` on the API host; frame extraction starts
+on `worker-datasets` only after the browser commits every uploaded object.
 
 Bảo vệ file:
 

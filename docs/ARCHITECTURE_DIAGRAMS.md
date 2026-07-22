@@ -62,9 +62,11 @@ sequenceDiagram
     participant Worker as Dataset worker
     participant DB as PostgreSQL
 
-    UI->>API: POST /datasets/{id}/start-import/
-    API->>Store: Stage uploaded files
-    API->>DB: Create DatasetImportJob
+    UI->>API: POST /datasets/{id}/prepare-import/
+    API->>DB: Create pending DatasetImportJob
+    API-->>UI: Presigned MinIO PUT URLs
+    UI->>Store: Upload large files directly
+    UI->>API: POST import-jobs/{job}/commit/
     API->>Queue: Enqueue on datasets
     API-->>UI: 202 + job state
     Queue->>Worker: Run import job
@@ -72,7 +74,7 @@ sequenceDiagram
     alt Images/archive
         Worker->>DB: Create media and annotations
     else Video extraction
-        Worker->>Worker: Compare color/layout/edge descriptors
+        Worker->>Worker: Compare descriptors and reject frames below the difference threshold
         Worker->>DB: Save diverse frames as image media
     end
     Worker->>Store: Delete staged inputs

@@ -19,10 +19,12 @@ from datasets.models import DatasetImportJob, Media
 # output count; the worker samples enough frames to compare visual content.
 CANDIDATES_PER_TARGET = 8
 JPEG_QUALITY = 92
+DEFAULT_MIN_FRAME_DIFFERENCE = 0.15
 
 DEFAULT_VIDEO_EXTRACTION_CONFIG = {
     'enabled': True,
     'target': 200,
+    'min_frame_difference': DEFAULT_MIN_FRAME_DIFFERENCE,
 }
 
 
@@ -56,7 +58,24 @@ def normalize_video_extraction_config(value: Any) -> dict:
         raise ValueError('video_extraction.target must be a number.') from exc
     if not 1 <= target <= 2000:
         raise ValueError('video_extraction.target must be between 1 and 2000.')
-    return {'enabled': True, 'target': target}
+
+    raw_difference = value.get(
+        'min_frame_difference',
+        DEFAULT_VIDEO_EXTRACTION_CONFIG['min_frame_difference'],
+    )
+    if isinstance(raw_difference, bool):
+        raise ValueError('video_extraction.min_frame_difference must be a number.')
+    try:
+        min_frame_difference = float(raw_difference)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('video_extraction.min_frame_difference must be a number.') from exc
+    if not 0 <= min_frame_difference <= 1:
+        raise ValueError('video_extraction.min_frame_difference must be between 0 and 1.')
+    return {
+        'enabled': True,
+        'target': target,
+        'min_frame_difference': min_frame_difference,
+    }
 
 
 def build_timestamps(
@@ -83,7 +102,11 @@ def descriptor_distance(first: tuple[float, ...], second: tuple[float, ...]) -> 
     return min(1.0, math.sqrt(sum((left - right) ** 2 for left, right in zip(first, second))) / 2.0)
 
 
-def select_diverse_candidates(candidates: list[Candidate], target: int) -> list[Candidate]:
+def select_diverse_candidates(
+    candidates: list[Candidate],
+    target: int,
+    min_frame_difference: float = DEFAULT_MIN_FRAME_DIFFERENCE,
+) -> list[Candidate]:
     """Select one visually distinctive frame per time bin, then fill gaps.
 
     Temporal bins guarantee coverage across the full video. Inside each bin,
@@ -100,7 +123,7 @@ def select_diverse_candidates(candidates: list[Candidate], target: int) -> list[
     selected: list[Candidate] = []
     selected_keys: set[tuple[float, int]] = set()
 
-    def choose(items: list[Candidate]) -> Candidate:
+    def choose(items: list[Candidate]) -> Candidate | None:
         import numpy as np
 
         if not selected:
@@ -108,16 +131,21 @@ def select_diverse_candidates(candidates: list[Candidate], target: int) -> list[
 
         # A bounded, timeline-spanning anchor set avoids quadratic work on
         # requests containing hundreds or thousands of output frames.
-        if len(selected) <= 64:
+        if len(selected) <= 256:
             anchors = selected
         else:
-            anchor_indexes = np.linspace(0, len(selected) - 1, 64, dtype=int)
+            timeline_indexes = np.linspace(0, len(selected) - 65, 192, dtype=int)
+            recent_indexes = np.arange(len(selected) - 64, len(selected), dtype=int)
+            anchor_indexes = np.unique(np.concatenate((timeline_indexes, recent_indexes)))
             anchors = [selected[index] for index in anchor_indexes]
         item_matrix = np.asarray([item.descriptor for item in items], dtype=np.float32)
         anchor_matrix = np.asarray([item.descriptor for item in anchors], dtype=np.float32)
         closest_similarity = np.max(item_matrix @ anchor_matrix.T, axis=1)
         visual_distance = np.sqrt(np.maximum(0.0, 2.0 - 2.0 * closest_similarity)) / 2.0
         scores = visual_distance + 0.12 * np.asarray([item.quality for item in items])
+        scores[visual_distance < min_frame_difference] = -np.inf
+        if np.all(np.isneginf(scores)):
+            return None
         return items[int(np.argmax(scores))]
 
     for bin_index in range(target):
@@ -125,6 +153,8 @@ def select_diverse_candidates(candidates: list[Candidate], target: int) -> list[
         if not items:
             continue
         chosen = choose(items)
+        if chosen is None:
+            continue
         selected.append(chosen)
         selected_keys.add((chosen.timestamp, chosen.bin_index))
 
@@ -134,6 +164,8 @@ def select_diverse_candidates(candidates: list[Candidate], target: int) -> list[
     ]
     while len(selected) < target and remaining:
         chosen = choose(remaining)
+        if chosen is None:
+            break
         selected.append(chosen)
         remaining.remove(chosen)
 
@@ -318,6 +350,9 @@ def _save_selected_frames(
 
 
 def run_video_extraction_job(job: DatasetImportJob, config: dict) -> dict:
+    # Normalize again so jobs queued before a new extraction option was added
+    # continue to run with current defaults after a worker deployment.
+    config = normalize_video_extraction_config(config)
     videos = [item for item in (job.staged_files or []) if item.get('media_type') == 'video']
     if not videos:
         raise ValueError('Video extraction requires at least one uploaded video.')
@@ -345,7 +380,11 @@ def run_video_extraction_job(job: DatasetImportJob, config: dict) -> dict:
             candidates, read_failures = _inspect_video(
                 temp_path, duration, target, update_progress,
             )
-            selected = select_diverse_candidates(candidates, target)
+            selected = select_diverse_candidates(
+                candidates,
+                target,
+                config['min_frame_difference'],
+            )
             saved = _save_selected_frames(
                 job, temp_path, staged.get('name') or 'video.mp4', selected,
             )

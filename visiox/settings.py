@@ -212,6 +212,7 @@ CELERY_TIMEZONE = TIME_ZONE
 # on the Celery task thread. Keep this bounded to avoid overwhelming MinIO.
 DATASET_IMPORT_STORAGE_WORKERS = int(os.getenv('DATASET_IMPORT_STORAGE_WORKERS', '4'))
 DATASET_IMPORT_BATCH_SIZE = int(os.getenv('DATASET_IMPORT_BATCH_SIZE', '16'))
+DATASET_DIRECT_UPLOAD_EXPIRES = int(os.getenv('DATASET_DIRECT_UPLOAD_EXPIRES', '3600'))
 
 # GPU training agent. The callback URL must be reachable from the GPU host
 # (use the API container/LAN address, never localhost in production).

@@ -5,6 +5,7 @@ import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from types import SimpleNamespace
 
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -54,6 +55,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_IMPORT_STORAGE_WORKERS = 4
 MAX_IMPORT_STORAGE_WORKERS = 16
 DEFAULT_IMPORT_BATCH_SIZE = 16
+DEFAULT_DIRECT_UPLOAD_EXPIRES = 3600
 
 
 def _dataset_import_storage_workers() -> int:
@@ -688,6 +690,74 @@ def _validate_dataset_import_files(
         )
 
 
+def _dataset_import_options(raw_video_extraction, import_format: str, files: list) -> dict:
+    if not raw_video_extraction:
+        return {}
+    if isinstance(raw_video_extraction, dict):
+        parsed_video_extraction = raw_video_extraction
+    else:
+        try:
+            parsed_video_extraction = json.loads(raw_video_extraction)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError('video_extraction must be valid JSON.') from exc
+
+    video_extraction = normalize_video_extraction_config(parsed_video_extraction)
+    if not video_extraction.get('enabled'):
+        return {}
+    if import_format != 'images':
+        raise ValueError('Video extraction is only available for Images imports.')
+    non_videos = [
+        posixpath.basename(getattr(file_obj, 'name', '') or '')
+        for file_obj in files
+        if _infer_media_type(file_obj) != 'video'
+    ]
+    if non_videos:
+        raise ValueError(
+            'When video extraction is enabled, upload video files only. '
+            f'Remove: {", ".join(non_videos[:10])}'
+        )
+    return {'video_extraction': video_extraction}
+
+
+def _import_job_data(job: DatasetImportJob) -> dict:
+    return {
+        'id': job.id,
+        'format': job.format,
+        'status': job.status,
+        'total': job.total,
+        'done': job.done,
+    }
+
+
+def _accepted_import_response(request, dataset: Dataset, job: DatasetImportJob) -> Response:
+    dataset.refresh_from_db()
+    return Response(
+        {
+            'accepted': True,
+            'dataset': DatasetSerializer(dataset, context={'request': request}).data,
+            'job': _import_job_data(job),
+        },
+        status=status.HTTP_202_ACCEPTED,
+    )
+
+
+def _direct_upload_url(storage_key: str, content_type: str) -> str:
+    if not getattr(settings, 'USE_MINIO', False):
+        raise RuntimeError('Direct upload requires MinIO storage.')
+    storage = default_storage
+    normalized_key = storage._normalize_name(storage_key)  # django-storages adds its optional location prefix.
+    expires = int(getattr(settings, 'DATASET_DIRECT_UPLOAD_EXPIRES', DEFAULT_DIRECT_UPLOAD_EXPIRES))
+    return storage.connection.meta.client.generate_presigned_url(
+        'put_object',
+        Params={
+            'Bucket': storage.bucket_name,
+            'Key': normalized_key,
+            'ContentType': content_type,
+        },
+        ExpiresIn=max(60, expires),
+    )
+
+
 def _stage_dataset_import_file(entry) -> dict:
     index, uploaded_file, dataset_id, job_id, forced_media_type = entry
     filename = posixpath.basename(uploaded_file.name)
@@ -763,21 +833,7 @@ def _queue_dataset_import_job(
     from datasets.tasks import enqueue_dataset_import_job
 
     transaction.on_commit(lambda job_id=job.id: enqueue_dataset_import_job(job_id))
-    dataset.refresh_from_db()
-    return Response(
-        {
-            'accepted': True,
-            'dataset': DatasetSerializer(dataset, context={'request': request}).data,
-            'job': {
-                'id': job.id,
-                'format': job.format,
-                'status': job.status,
-                'total': job.total,
-                'done': job.done,
-            },
-        },
-        status=status.HTTP_202_ACCEPTED,
-    )
+    return _accepted_import_response(request, dataset, job)
 
 
 def _import_staged_media_files(job: DatasetImportJob) -> dict:
@@ -1178,7 +1234,16 @@ class DatasetViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         if self.action == 'destroy':
             return [HasPerm('datasets.delete_dataset')]
-        if self.action in ('upload', 'upload_batch', 'import_archive', 'start_import', 'delete_frame'):
+        if self.action in (
+            'upload',
+            'upload_batch',
+            'import_archive',
+            'start_import',
+            'prepare_import',
+            'commit_import',
+            'abort_import',
+            'delete_frame',
+        ):
             return [HasPerm('datasets.upload_media')]
         if self.action == 'verify':
             return [HasPerm('annotations.approve_annotation')]
@@ -1422,33 +1487,13 @@ class DatasetViewSet(viewsets.ModelViewSet):
         import_format = request.data.get('format', 'images')
         replace_existing = str(request.data.get('replace_existing', '')).strip().lower() in ('1', 'true', 'yes', 'on')
         files = request.FILES.getlist('files') or ([request.FILES['file']] if 'file' in request.FILES else [])
-        import_options = {}
         try:
             _validate_dataset_import_files(dataset, import_format, files, max_files=500)
-            raw_video_extraction = request.data.get('video_extraction')
-            if raw_video_extraction:
-                if isinstance(raw_video_extraction, dict):
-                    parsed_video_extraction = raw_video_extraction
-                else:
-                    try:
-                        parsed_video_extraction = json.loads(raw_video_extraction)
-                    except (TypeError, json.JSONDecodeError) as exc:
-                        raise ValueError('video_extraction must be valid JSON.') from exc
-                video_extraction = normalize_video_extraction_config(parsed_video_extraction)
-                if video_extraction.get('enabled'):
-                    if import_format != 'images':
-                        raise ValueError('Video extraction is only available for Images imports.')
-                    non_videos = [
-                        posixpath.basename(getattr(file_obj, 'name', '') or '')
-                        for file_obj in files
-                        if _infer_media_type(file_obj) != 'video'
-                    ]
-                    if non_videos:
-                        raise ValueError(
-                            'When video extraction is enabled, upload video files only. '
-                            f'Remove: {", ".join(non_videos[:10])}'
-                        )
-                    import_options['video_extraction'] = video_extraction
+            import_options = _dataset_import_options(
+                request.data.get('video_extraction'),
+                import_format,
+                files,
+            )
         except ValueError as exc:
             detail = str(exc)
             status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
@@ -1462,6 +1507,152 @@ class DatasetViewSet(viewsets.ModelViewSet):
             replace_existing=replace_existing and import_format == 'yolo26',
             import_options=import_options,
         )
+
+    @action(detail=True, methods=['post'], url_path='prepare-import')
+    def prepare_import(self, request, pk=None):
+        """Create an import job and presign direct-to-MinIO staging uploads."""
+        dataset = self.get_object()
+        if not getattr(settings, 'USE_MINIO', False):
+            return Response({'direct_upload': False})
+
+        import_format = request.data.get('format', 'images')
+        raw_files = request.data.get('files')
+        if not isinstance(raw_files, list):
+            return Response({'detail': 'files must be a list.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        files = []
+        try:
+            for item in raw_files:
+                if not isinstance(item, dict):
+                    raise ValueError('Every file descriptor must be an object.')
+                name = posixpath.basename(str(item.get('name') or ''))
+                size = int(item.get('size') or 0)
+                if not name or size <= 0:
+                    raise ValueError('Every file must have a name and positive size.')
+                files.append(SimpleNamespace(
+                    name=name,
+                    size=size,
+                    content_type=str(item.get('content_type') or 'application/octet-stream'),
+                ))
+            _validate_dataset_import_files(dataset, import_format, files, max_files=500)
+            import_options = _dataset_import_options(
+                request.data.get('video_extraction'),
+                import_format,
+                files,
+            )
+        except (TypeError, ValueError) as exc:
+            detail = str(exc)
+            status_code = status.HTTP_409_CONFLICT if 'already exist' in detail else status.HTTP_400_BAD_REQUEST
+            return Response({'detail': detail}, status=status_code)
+
+        replace_existing = str(request.data.get('replace_existing', '')).strip().lower() in (
+            '1', 'true', 'yes', 'on',
+        )
+        job = DatasetImportJob.objects.create(
+            dataset=dataset,
+            format=import_format,
+            status='queued',
+            total=len(files),
+            done=0,
+            summary={
+                'replace_existing': replace_existing and import_format == 'yolo26',
+                'upload_pending': True,
+                **import_options,
+            },
+            created_by=request.user,
+        )
+
+        staged_files = []
+        uploads = []
+        try:
+            for index, file_descriptor in enumerate(files):
+                stage_key = (
+                    f'import-staging/datasets/{dataset.id}/jobs/{job.id}/'
+                    f'{index + 1}_{uuid.uuid4().hex}_{file_descriptor.name}'
+                )
+                content_type = file_descriptor.content_type or 'application/octet-stream'
+                staged_files.append({
+                    'key': stage_key,
+                    'name': file_descriptor.name,
+                    'size': file_descriptor.size,
+                    'content_type': content_type,
+                    'media_type': _infer_media_type(file_descriptor),
+                })
+                uploads.append({
+                    'index': index,
+                    'name': file_descriptor.name,
+                    'url': _direct_upload_url(stage_key, content_type),
+                    'headers': {'Content-Type': content_type},
+                })
+        except Exception as exc:
+            job.delete()
+            logger.exception('Could not prepare direct upload for dataset %s', dataset.id)
+            return Response(
+                {'detail': f'Could not prepare direct upload: {exc}'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        job.staged_files = staged_files
+        job.save(update_fields=['staged_files', 'updated_at'])
+        response = _accepted_import_response(request, dataset, job)
+        response.status_code = status.HTTP_200_OK
+        response.data.update({'direct_upload': True, 'uploads': uploads})
+        return response
+
+    @action(
+        detail=True,
+        methods=['post'],
+        url_path=r'import-jobs/(?P<job_id>\d+)/commit',
+    )
+    def commit_import(self, request, pk=None, job_id=None):
+        dataset = self.get_object()
+        job = dataset.import_jobs.filter(id=job_id, created_by=request.user).first()
+        if not job:
+            return Response({'detail': 'Import job not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if not (job.summary or {}).get('upload_pending'):
+            return _accepted_import_response(request, dataset, job)
+
+        missing = [
+            item.get('name') or item.get('key')
+            for item in (job.staged_files or [])
+            if not item.get('key') or not default_storage.exists(item['key'])
+        ]
+        if missing:
+            return Response(
+                {'detail': f'Upload is incomplete. Missing: {", ".join(missing[:10])}'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        summary = dict(job.summary or {})
+        summary.pop('upload_pending', None)
+        summary['upload_completed'] = True
+        job.summary = summary
+        job.save(update_fields=['summary', 'updated_at'])
+
+        from datasets.tasks import enqueue_dataset_import_job
+
+        transaction.on_commit(lambda current_job_id=job.id: enqueue_dataset_import_job(current_job_id))
+        return _accepted_import_response(request, dataset, job)
+
+    @action(
+        detail=True,
+        methods=['post'],
+        url_path=r'import-jobs/(?P<job_id>\d+)/abort',
+    )
+    def abort_import(self, request, pk=None, job_id=None):
+        dataset = self.get_object()
+        job = dataset.import_jobs.filter(id=job_id, created_by=request.user).first()
+        if not job:
+            return Response({'detail': 'Import job not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if (job.summary or {}).get('upload_pending'):
+            _delete_staged_files(job.staged_files or [])
+            summary = dict(job.summary or {})
+            summary.pop('upload_pending', None)
+            job.summary = summary
+            job.status = 'error'
+            job.error = 'Upload was interrupted before the import started.'
+            job.save(update_fields=['summary', 'status', 'error', 'updated_at'])
+        return Response({'aborted': True, 'job': _import_job_data(job)})
 
     @action(
         detail=True,
