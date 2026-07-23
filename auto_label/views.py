@@ -9,7 +9,8 @@ from rest_framework.views import APIView
 
 from annotations.colors import class_color_for_index
 from annotations.models import Class
-from auto_label.models import AutoLabelDatasetJob, AutoLabelModel
+from auto_label.models import AutoLabelDatasetJob, AutoLabelModel, ObjectPropagationJob
+from auto_label.propagation import normalize_bbox
 from auto_label.providers import PROVIDERS, provider_by_id
 from auto_label.serializers import AutoLabelModelSerializer
 from auto_label.services import (
@@ -20,7 +21,7 @@ from auto_label.services import (
     purge_temporary_model,
     request_predictions,
 )
-from auto_label.tasks import enqueue_auto_label_dataset_job
+from auto_label.tasks import enqueue_auto_label_dataset_job, enqueue_object_propagation_job
 from core.access import project_access_q
 from datasets.models import Dataset
 from datasets.services.media_browser import ordered_image_media
@@ -65,6 +66,29 @@ def dataset_job_payload(job):
         'labeled_images': job.labeled_images,
         'saved_annotations': job.saved_annotations,
         'skipped_predictions': job.skipped_predictions,
+        'error': job.error,
+        'created_at': job.created_at,
+        'updated_at': job.updated_at,
+    }
+
+
+def propagation_job_payload(job):
+    return {
+        'id': job.id,
+        'dataset': job.dataset_id,
+        'source_frame': job.source_frame,
+        'source_media': job.source_media_id,
+        'class_label': job.class_label_id,
+        'class_name': job.class_label.name,
+        'seed_bbox': job.seed_bbox,
+        'similarity_threshold': job.similarity_threshold,
+        'max_frames': job.max_frames,
+        'track_id': str(job.track_id),
+        'status': job.status,
+        'total': job.total,
+        'done': job.done,
+        'matched_frames': job.matched_frames,
+        'saved_annotations': job.saved_annotations,
         'error': job.error,
         'created_at': job.created_at,
         'updated_at': job.updated_at,
@@ -134,6 +158,85 @@ class DatasetAutoLabelJobView(APIView):
         if job is None:
             return Response({'error': 'Auto Label job not found.'}, status=status.HTTP_404_NOT_FOUND)
         return Response(dataset_job_payload(job))
+
+
+class ObjectPropagationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, dataset_id, frame_num):
+        dataset = Dataset.objects.filter(
+            project_access_q(request.user, 'project__'),
+            pk=dataset_id,
+        ).select_related('project').first()
+        if dataset is None:
+            return Response({'error': 'Dataset not found.'}, status=status.HTTP_404_NOT_FOUND)
+        source_media = ordered_image_media(dataset)[frame_num:frame_num + 1].first()
+        if source_media is None:
+            return Response({'error': 'Source frame not found.'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            class_label_id = int(request.data.get('class_label'))
+            threshold = float(request.data.get('similarity_threshold', 0.7))
+            bbox = normalize_bbox(
+                request.data.get('bbox'),
+                image_width=source_media.width,
+                image_height=source_media.height,
+            )
+            raw_max_frames = request.data.get('max_frames')
+            max_frames = None if raw_max_frames in (None, '') else int(raw_max_frames)
+        except (TypeError, ValueError) as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if not 0.3 <= threshold <= 0.95:
+            return Response(
+                {'error': 'similarity_threshold must be between 0.3 and 0.95.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if max_frames is not None and not 1 <= max_frames <= 10000:
+            return Response(
+                {'error': 'max_frames must be between 1 and 10000.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        class_label = Class.objects.filter(project=dataset.project, pk=class_label_id).first()
+        if class_label is None:
+            return Response({'error': 'Project class not found.'}, status=status.HTTP_404_NOT_FOUND)
+        active = ObjectPropagationJob.objects.filter(
+            dataset=dataset,
+            status__in=('queued', 'running'),
+        ).select_related('class_label').first()
+        if active:
+            return Response(propagation_job_payload(active), status=status.HTTP_200_OK)
+        remaining = ordered_image_media(dataset)[frame_num + 1:].count()
+        total = min(remaining, max_frames) if max_frames else remaining
+        if total == 0:
+            return Response({'error': 'There are no later frames to label.'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            job = ObjectPropagationJob.objects.create(
+                dataset=dataset,
+                source_media=source_media,
+                source_frame=frame_num,
+                class_label=class_label,
+                seed_bbox=bbox,
+                similarity_threshold=threshold,
+                max_frames=max_frames,
+                total=total,
+                created_by=request.user,
+            )
+            transaction.on_commit(lambda: enqueue_object_propagation_job(job.id))
+        return Response(propagation_job_payload(job), status=status.HTTP_202_ACCEPTED)
+
+
+class ObjectPropagationJobView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_classes = []
+
+    def get(self, request, dataset_id, job_id):
+        job = ObjectPropagationJob.objects.filter(
+            project_access_q(request.user, 'dataset__project__'),
+            dataset_id=dataset_id,
+            pk=job_id,
+        ).select_related('class_label').first()
+        if job is None:
+            return Response({'error': 'Object propagation job not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(propagation_job_payload(job))
 
 
 class FrameAutoLabelPredictView(APIView):

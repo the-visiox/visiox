@@ -7,6 +7,8 @@ from auto_label.views import (
     DatasetAutoLabelJobView,
     DatasetAutoLabelView,
     FrameAutoLabelPredictView,
+    ObjectPropagationJobView,
+    ObjectPropagationView,
 )
 
 router = DefaultRouter()
@@ -24,6 +26,16 @@ urlpatterns = [
         'datasets/<int:dataset_id>/frames/<int:frame_num>/predict/',
         FrameAutoLabelPredictView.as_view(),
         name='auto-label-frame-predict',
+    ),
+    path(
+        'datasets/<int:dataset_id>/frames/<int:frame_num>/propagate/',
+        ObjectPropagationView.as_view(),
+        name='object-propagation',
+    ),
+    path(
+        'datasets/<int:dataset_id>/propagation-jobs/<int:job_id>/',
+        ObjectPropagationJobView.as_view(),
+        name='object-propagation-job',
     ),
     *router.urls,
 ]

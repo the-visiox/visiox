@@ -1267,6 +1267,8 @@ provider such as YOLO World and returns editable drafts for the current frame.
 | `POST` | `/api/v1/datasets/{dataset_id}/frames/{frame_num}/predict/` | Predict editable bbox/polygon drafts for one frame |
 | `POST` | `/api/v1/datasets/{dataset_id}/auto-label/` | Queue Auto Label for every dataset image |
 | `GET` | `/api/v1/datasets/{dataset_id}/auto-label/jobs/{job_id}/` | Read dataset job progress and result counts |
+| `POST` | `/api/v1/datasets/{dataset_id}/frames/{frame_num}/propagate/` | Track one selected bounding box through later frames |
+| `GET` | `/api/v1/datasets/{dataset_id}/propagation-jobs/{job_id}/` | Read object propagation progress and result counts |
 
 Imported model prediction source:
 

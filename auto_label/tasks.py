@@ -169,3 +169,131 @@ def enqueue_auto_label_dataset_job(job_id):
         auto_label_dataset_task.apply_async(args=[job_id], queue='datasets')
         return
     threading.Thread(target=run_auto_label_dataset_job, args=(job_id,), daemon=True).start()
+
+
+def run_object_propagation_job(job_id):
+    from annotations.models import Annotation
+    from auto_label.models import ObjectPropagationJob
+    from auto_label.propagation import bbox_iou, crop_bbox, read_media_image, track_next_bbox
+    from datasets.services.media_browser import ordered_image_media
+    from datasets.tasks import enqueue_dataset_label_cache_clear
+
+    job = ObjectPropagationJob.objects.select_related(
+        'dataset', 'class_label', 'source_media', 'created_by',
+    ).get(pk=job_id)
+    job.status = 'running'
+    job.error = ''
+    job.save(update_fields=['status', 'error', 'updated_at'])
+
+    try:
+        media_items = list(ordered_image_media(job.dataset))
+        try:
+            source_index = next(index for index, media in enumerate(media_items) if media.id == job.source_media_id)
+        except StopIteration as exc:
+            raise RuntimeError('The source frame is no longer available.') from exc
+        targets = media_items[source_index + 1:]
+        if job.max_frames:
+            targets = targets[:job.max_frames]
+        job.total = len(targets)
+        job.save(update_fields=['total', 'updated_at'])
+
+        source_image = read_media_image(job.source_media)
+        if source_image is None:
+            raise RuntimeError('Could not read the source frame.')
+        seed_bbox = job.seed_bbox
+        seed_template = crop_bbox(source_image, seed_bbox)
+        if seed_template.shape[0] < 8 or seed_template.shape[1] < 8:
+            raise RuntimeError('The selected bounding box is too small to track.')
+
+        previous_bbox = seed_bbox
+        previous_template = seed_template
+        previous_height, previous_width = source_image.shape[:2]
+        existing_by_media = {}
+        for media_id, data in Annotation.objects.filter(
+            media_id__in=[media.id for media in targets],
+            class_label=job.class_label,
+            is_valid=True,
+            type__in=('bbox', 'rectangle'),
+        ).values_list('media_id', 'data'):
+            existing_by_media.setdefault(media_id, []).append(data or {})
+
+        matched = 0
+        saved = 0
+        for index, media in enumerate(targets, start=1):
+            image = read_media_image(media)
+            if image is not None:
+                current_height, current_width = image.shape[:2]
+                expected_bbox = {
+                    'x': previous_bbox['x'] * current_width / previous_width,
+                    'y': previous_bbox['y'] * current_height / previous_height,
+                    'width': previous_bbox['width'] * current_width / previous_width,
+                    'height': previous_bbox['height'] * current_height / previous_height,
+                }
+                result = track_next_bbox(
+                    image,
+                    expected_bbox,
+                    previous_template,
+                    seed_template,
+                    job.similarity_threshold,
+                )
+                if result is not None:
+                    bbox, confidence, next_template = result
+                    bbox = {key: round(float(value), 2) for key, value in bbox.items()}
+                    matched += 1
+                    duplicate = any(
+                        bbox_iou(bbox, existing) >= 0.7
+                        for existing in existing_by_media.get(media.id, [])
+                        if all(key in existing for key in ('x', 'y', 'width', 'height'))
+                    )
+                    if not duplicate:
+                        Annotation.objects.create(
+                            media=media,
+                            class_label=job.class_label,
+                            annotator=job.created_by,
+                            type='bbox',
+                            data={
+                                **bbox,
+                                'source': 'auto_label',
+                                'confidence': round(confidence, 4),
+                                'auto_label_source': 'propagation',
+                                'auto_label_provider': 'visual_tracker',
+                                'auto_label_engine_name': 'Visual object tracker',
+                            },
+                            frame=0,
+                            track_id=job.track_id,
+                        )
+                        existing_by_media.setdefault(media.id, []).append(bbox)
+                        saved += 1
+                    previous_bbox = bbox
+                    previous_template = next_template
+                else:
+                    previous_bbox = expected_bbox
+                previous_height, previous_width = current_height, current_width
+
+            job.done = index
+            job.matched_frames = matched
+            job.saved_annotations = saved
+            job.save(update_fields=['done', 'matched_frames', 'saved_annotations', 'updated_at'])
+
+        job.status = 'done'
+        job.save(update_fields=['status', 'updated_at'])
+        job.dataset.invalidate_training_verification()
+        enqueue_dataset_label_cache_clear(job.dataset_id)
+    except Exception as exc:
+        job.status = 'error'
+        job.error = str(exc)[:2000]
+        job.save(update_fields=['status', 'error', 'updated_at'])
+        raise
+
+
+@shared_task(bind=True, max_retries=0)
+def object_propagation_task(self, job_id):
+    run_object_propagation_job(job_id)
+    return {'job_id': job_id}
+
+
+def enqueue_object_propagation_job(job_id):
+    if getattr(settings, 'AUTO_LABEL_USE_CELERY', False):
+        object_propagation_task.apply_async(args=[job_id], queue='datasets')
+        return
+    threading.Thread(target=run_object_propagation_job, args=(job_id,), daemon=True).start()

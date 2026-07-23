@@ -86,3 +86,37 @@ class AutoLabelDatasetJob(models.Model):
 
     def __str__(self):
         return f'AutoLabelDatasetJob {self.id} ({self.status}) {self.done}/{self.total}'
+
+
+class ObjectPropagationJob(models.Model):
+    STATUS_CHOICES = [
+        ('queued', 'Queued'),
+        ('running', 'Running'),
+        ('done', 'Done'),
+        ('error', 'Error'),
+    ]
+
+    dataset = models.ForeignKey('datasets.Dataset', on_delete=models.CASCADE, related_name='propagation_jobs')
+    source_media = models.ForeignKey('datasets.Media', on_delete=models.CASCADE, related_name='source_propagation_jobs')
+    source_frame = models.PositiveIntegerField()
+    class_label = models.ForeignKey('annotations.Class', on_delete=models.CASCADE, related_name='propagation_jobs')
+    seed_bbox = models.JSONField()
+    similarity_threshold = models.FloatField(default=0.7)
+    max_frames = models.PositiveIntegerField(null=True, blank=True)
+    track_id = models.UUIDField(default=uuid.uuid4, editable=False)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='queued')
+    total = models.PositiveIntegerField(default=0)
+    done = models.PositiveIntegerField(default=0)
+    matched_frames = models.PositiveIntegerField(default=0)
+    saved_annotations = models.PositiveIntegerField(default=0)
+    error = models.TextField(blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'object_propagation_jobs'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'ObjectPropagationJob {self.id} ({self.status}) {self.done}/{self.total}'

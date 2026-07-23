@@ -358,7 +358,8 @@ docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets \
   celery -A visiox inspect registered
 ```
 
-Kết quả phải có `auto_label.tasks.auto_label_dataset_task`.
+Kết quả phải có `auto_label.tasks.auto_label_dataset_task` và
+`auto_label.tasks.object_propagation_task`.
 
 ## 11. Chuyển queue trên máy `.9`
 

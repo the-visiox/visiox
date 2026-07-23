@@ -360,11 +360,24 @@ POST   /api/v1/auto-label/models/
 GET    /api/v1/auto-label/models/{id}/
 DELETE /api/v1/auto-label/models/{id}/
 GET    /api/v1/auto-label/providers/
+POST   /api/v1/datasets/{dataset_id}/frames/{frame_num}/propagate/
+GET    /api/v1/datasets/{dataset_id}/propagation-jobs/{job_id}/
 ```
 
 Upload hợp lệ trả trạng thái `ready` sau khi Django kiểm tra metadata cơ bản và
 lưu artifact. Trạng thái `validating`/`failed` được giữ trong schema để bổ sung
 agent-side validation bất đồng bộ sau này; model chưa `ready` không được chạy.
+
+### Propagate một object sang các frame sau
+
+Workspace cho phép chọn một bounding box đã vẽ và chạy visual tracker không phụ
+thuộc YOLO. Request gửi class, bbox nguồn, ngưỡng tương đồng mặc định `0.70` và
+giới hạn frame tùy chọn. Celery worker trên queue `datasets` đọc ảnh từ
+filesystem/MinIO, tìm object theo template đa tỉ lệ, bỏ qua bbox trùng với
+annotation hiện có và lưu các kết quả với cùng một `track_id`.
+
+Job tiếp tục chạy khi người dùng đóng dialog. Frontend poll endpoint job để hiển
+thị số frame đã quét, số frame match và số annotation đã lưu.
 
 ## 8. Frontend implementation
 

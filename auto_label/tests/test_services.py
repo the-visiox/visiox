@@ -14,6 +14,7 @@ from auto_label.services import (
     prediction_polygon_data,
     request_predictions,
 )
+from auto_label.propagation import bbox_iou, crop_bbox, normalize_bbox, track_next_bbox
 
 
 class AutoLabelGeometryTests(SimpleTestCase):
@@ -93,3 +94,37 @@ class AutoLabelInferenceFallbackTests(SimpleTestCase):
 
         self.assertEqual(result['summary']['engine'], 'local')
         local_predictions.assert_called_once_with(payload)
+
+
+class ObjectPropagationTests(SimpleTestCase):
+    def test_bbox_validation_and_iou(self):
+        bbox = normalize_bbox(
+            {'x': -5, 'y': 10, 'width': 30, 'height': 20},
+            image_width=100,
+            image_height=80,
+        )
+        self.assertEqual(bbox, {'x': 0.0, 'y': 10.0, 'width': 30.0, 'height': 20.0})
+        self.assertAlmostEqual(bbox_iou(bbox, bbox), 1.0)
+
+    def test_tracker_finds_shifted_template(self):
+        import cv2
+        import numpy as np
+
+        rng = np.random.default_rng(7)
+        patch = rng.integers(0, 255, size=(24, 30, 3), dtype=np.uint8)
+        source = np.zeros((120, 160, 3), dtype=np.uint8)
+        target = np.zeros_like(source)
+        source[30:54, 40:70] = patch
+        target[47:71, 66:96] = patch
+        cv2.rectangle(source, (40, 30), (69, 53), (255, 255, 255), 1)
+        cv2.rectangle(target, (66, 47), (95, 70), (255, 255, 255), 1)
+        bbox = {'x': 40.0, 'y': 30.0, 'width': 30.0, 'height': 24.0}
+        template = crop_bbox(source, bbox)
+
+        result = track_next_bbox(target, bbox, template, template, 0.7)
+
+        self.assertIsNotNone(result)
+        tracked, confidence, _ = result
+        self.assertGreaterEqual(confidence, 0.7)
+        self.assertLess(abs(tracked['x'] - 66), 2)
+        self.assertLess(abs(tracked['y'] - 47), 2)
