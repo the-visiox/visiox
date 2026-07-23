@@ -242,6 +242,21 @@ Thêm service sau dưới `services:`:
 Worker không cần `ports`. Tất cả kết nối đều do worker chủ động mở tới service
 nội bộ.
 
+Auto Label toàn dataset cũng chạy trên worker này. `.env.worker` cần có:
+
+```env
+AUTO_LABEL_USE_CELERY=True
+AUTO_LABEL_DATASET_BATCH_SIZE=32
+INFERENCE_API_URL=http://192.168.210.26:8003
+INFERENCE_AGENT_TOKEN=<INFERENCE_AGENT_TOKEN>
+AUTO_LABEL_LOCAL_FALLBACK=False
+```
+
+API trên máy `.9` cũng phải đặt `AUTO_LABEL_USE_CELERY=True`; đây là tiến trình
+quyết định enqueue sang Redis. Worker `.20` đọc model/ảnh từ MinIO nội bộ rồi
+gọi Inference Agent GPU. Không bật local fallback trên `.20` nếu máy này không
+có GPU, vì lỗi agent sẽ biến thành inference CPU rất chậm.
+
 Có thể xóa dòng `version: '3.9'`; Docker Compose mới không còn sử dụng thuộc tính
 này.
 
@@ -335,6 +350,15 @@ Có thể kiểm tra từ container:
 docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets \
   celery -A visiox inspect active_queues
 ```
+
+Xác nhận image worker đã chứa task Auto Label:
+
+```bash
+docker compose -p infiniq -f docker-compose.infra.yml exec -T worker-datasets \
+  celery -A visiox inspect registered
+```
+
+Kết quả phải có `auto_label.tasks.auto_label_dataset_task`.
 
 ## 11. Chuyển queue trên máy `.9`
 

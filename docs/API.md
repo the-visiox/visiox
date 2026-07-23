@@ -608,6 +608,9 @@ upload. When MinIO is disabled, `prepare-import` returns
 The MinIO bucket CORS policy must allow browser `PUT` requests and the
 `Content-Type` header from every configured frontend origin. Presigned URLs
 expire after `DATASET_DIRECT_UPLOAD_EXPIRES` seconds (default: `3600`).
+Each import accepts up to `DATASET_IMPORT_MAX_FILES` descriptors (default:
+`5000`, hard limit: `10000`). Keep `DATA_UPLOAD_MAX_NUMBER_FILES` at least as
+high when multipart fallback is enabled.
 
 **Response `202`:**
 
@@ -1271,7 +1274,7 @@ Imported model prediction source:
 {
   "source": {"kind": "uploaded_model", "model_id": 12},
   "output_type": "bbox",
-  "confidence": 0.25,
+  "confidence": 0.45,
   "create_missing_classes": false
 }
 ```
@@ -1287,7 +1290,7 @@ YOLO World prediction source:
     "prompts": ["person", "forklift", "pallet"]
   },
   "output_type": "bbox",
-  "confidence": 0.25,
+  "confidence": 0.45,
   "create_missing_classes": false
 }
 ```

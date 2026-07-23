@@ -1,17 +1,23 @@
 import json
+import logging
 import threading
 
 from celery import shared_task
 from django.conf import settings
 
 
-DATASET_BATCH_SIZE = 24
+logger = logging.getLogger(__name__)
 
 
 def run_auto_label_dataset_job(job_id):
     from annotations.models import Annotation, Class
     from auto_label.models import AutoLabelDatasetJob
-    from auto_label.services import prediction_bbox_data, prediction_polygon_data, request_predictions
+    from auto_label.services import (
+        prediction_bbox_data,
+        prediction_polygon_data,
+        purge_temporary_model,
+        request_predictions,
+    )
     from datasets.tasks import enqueue_dataset_label_cache_clear
 
     job = AutoLabelDatasetJob.objects.select_related('dataset__project', 'model', 'created_by').get(pk=job_id)
@@ -40,8 +46,9 @@ def run_auto_label_dataset_job(job_id):
         labeled_media_ids = set()
         saved = 0
         skipped = 0
-        for offset in range(0, len(media_items), DATASET_BATCH_SIZE):
-            batch = media_items[offset:offset + DATASET_BATCH_SIZE]
+        batch_size = max(1, int(getattr(settings, 'AUTO_LABEL_DATASET_BATCH_SIZE', 32)))
+        for offset in range(0, len(media_items), batch_size):
+            batch = media_items[offset:offset + batch_size]
             media_by_id = {item.id: item for item in batch}
             engine = {
                 'provider': 'uploaded_yolo',
@@ -51,6 +58,7 @@ def run_auto_label_dataset_job(job_id):
                 'format': 'pt',
                 'task_type': model.task_type,
                 'storage_key': model.model_file.name,
+                'checksum': model.checksum,
             }
             result = request_predictions({
                 'engine': engine,
@@ -60,11 +68,21 @@ def run_auto_label_dataset_job(job_id):
                     'version': model.version,
                     'format': 'pt',
                     'storage_key': model.model_file.name,
+                    'checksum': model.checksum,
                 },
                 'dataset': {'id': dataset.id, 'media_ids': list(media_by_id)},
                 'output_type': job.output_type,
                 'confidence': job.confidence,
             })
+            profiling = result.get('profiling') or result.get('summary')
+            if profiling:
+                logger.info(
+                    'Auto Label job %s batch %s-%s profiling: %s',
+                    job.id,
+                    offset,
+                    offset + len(batch) - 1,
+                    profiling,
+                )
 
             annotations = []
             seen_predictions = set()
@@ -136,6 +154,8 @@ def run_auto_label_dataset_job(job_id):
         job.error = str(exc)[:2000]
         job.save(update_fields=['status', 'error', 'updated_at'])
         raise
+    finally:
+        purge_temporary_model(job.model)
 
 
 @shared_task(bind=True, max_retries=0)

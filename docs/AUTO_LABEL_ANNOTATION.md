@@ -156,7 +156,7 @@ Request khi dùng imported model:
     "model_id": 12
   },
   "output_type": "bbox",
-  "confidence": 0.25,
+  "confidence": 0.45,
   "create_missing_classes": false
 }
 ```
@@ -172,7 +172,7 @@ Request khi dùng YOLO World:
     "prompts": ["person", "forklift", "pallet"]
   },
   "output_type": "bbox",
-  "confidence": 0.25,
+  "confidence": 0.45,
   "create_missing_classes": false
 }
 ```
@@ -249,14 +249,15 @@ Django gửi request tới Inference Agent:
     "version": "1.0.0",
     "format": "pytorch",
     "task_type": "instance_segmentation",
-    "storage_key": "auto-label/models/12/model.pt"
+    "storage_key": "auto-label/models/12/model.pt",
+    "checksum": "<sha256>"
   },
   "dataset": {
     "id": 32,
     "media_ids": [4546]
   },
   "output_type": "polygon",
-  "confidence": 0.25
+  "confidence": 0.45
 }
 ```
 
@@ -274,7 +275,7 @@ YOLO World request dùng cùng endpoint nhưng engine khác:
     "media_ids": [4546]
   },
   "output_type": "bbox",
-  "confidence": 0.25
+  "confidence": 0.45
 }
 ```
 
@@ -303,6 +304,11 @@ AutoLabelProvider
 Mỗi adapter chịu trách nhiệm load/cache model, validate parameters và chuyển
 output riêng của framework về prediction schema chung. Django và frontend không
 import thư viện YOLO hoặc chứa logic phụ thuộc Ultralytics.
+
+Dataset Auto Label mặc định gửi 32 ảnh/request. Inference Agent phải cache model
+theo `checksum` (fallback `storage_key`), warmup một lần và tái sử dụng model
+giữa các request của cùng job. Confidence mặc định của frontend/backend là
+`0.45`.
 
 ## 7. Backend implementation
 

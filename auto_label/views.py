@@ -17,6 +17,7 @@ from auto_label.services import (
     inference_confidence,
     prediction_bbox_data,
     prediction_polygon_data,
+    purge_temporary_model,
     request_predictions,
 )
 from auto_label.tasks import enqueue_auto_label_dataset_job
@@ -33,8 +34,10 @@ class AutoLabelModelViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = AutoLabelModel.objects.filter(
-            project_access_q(self.request.user, 'project__')
+            project_access_q(self.request.user, 'project__'),
         ).distinct().select_related('project', 'created_by')
+        if self.action == 'list':
+            queryset = queryset.filter(is_temporary=False)
         project_id = self.request.query_params.get('project')
         if project_id:
             queryset = queryset.filter(project_id=project_id)
@@ -177,6 +180,14 @@ class FrameAutoLabelPredictView(APIView):
             result = request_predictions(payload)
         except AutoLabelInferenceError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        finally:
+            if compatibility_model:
+                temporary_model = AutoLabelModel.objects.filter(
+                    pk=compatibility_model['registry_id'],
+                    is_temporary=True,
+                ).first()
+                if temporary_model is not None:
+                    purge_temporary_model(temporary_model)
 
         classes = list(Class.objects.filter(project=dataset.project).order_by('id'))
         class_by_name = {item.name.strip().casefold(): item for item in classes}

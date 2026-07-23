@@ -7,7 +7,7 @@ PROVIDERS = [
         'models': ['yolov8s-worldv2', 'yolov8m-worldv2', 'yolov8l-worldv2'],
         'parameters': {
             'prompts': {'type': 'string[]', 'required': True},
-            'confidence': {'type': 'number', 'min': 0, 'max': 1, 'default': 0.25},
+            'confidence': {'type': 'number', 'min': 0, 'max': 1, 'default': 0.45},
         },
     },
 ]

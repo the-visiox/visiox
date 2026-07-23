@@ -11,6 +11,7 @@ from django.test import SimpleTestCase, override_settings
 
 from datasets.views.dataset_view import (
     _dataset_import_batch_size,
+    _dataset_import_max_files,
     _dataset_import_storage_workers,
     _direct_upload_url,
     _duplicate_names_error,
@@ -27,6 +28,19 @@ from datasets.services.video_extraction import (
     normalize_video_extraction_config,
     select_diverse_candidates,
 )
+from datasets.services.media_browser import image_media_for_frame
+
+
+class DatasetFrameLookupTests(SimpleTestCase):
+    def test_media_id_uses_stable_dataset_media_lookup(self):
+        expected_media = object()
+        dataset = Mock()
+        dataset.media_files.filter.return_value.first.return_value = expected_media
+
+        result = image_media_for_frame(dataset, frame_num=18, media_id=4845)
+
+        self.assertIs(result, expected_media)
+        dataset.media_files.filter.assert_called_once_with(type='image', id=4845)
 
 
 class _FakeFieldFile:
@@ -129,16 +143,20 @@ class DatasetImportStorageTests(SimpleTestCase):
 
         self.assertEqual([candidate.timestamp for candidate in selected], [1.0, 3.0])
 
-    def test_multipart_parser_accepts_169_image_files(self):
-        self.assertGreaterEqual(settings.DATA_UPLOAD_MAX_NUMBER_FILES, 500)
+    def test_multipart_parser_accepts_large_image_dataset(self):
+        self.assertGreaterEqual(settings.DATA_UPLOAD_MAX_NUMBER_FILES, 1000)
         files = [
             SimpleUploadedFile(f'image-{index}.jpg', b'image', content_type='image/jpeg')
-            for index in range(169)
+            for index in range(1000)
         ]
 
         request = RequestFactory().post('/datasets/1/start-import/', {'files': files})
 
-        self.assertEqual(len(request.FILES.getlist('files')), 169)
+        self.assertEqual(len(request.FILES.getlist('files')), 1000)
+
+    @override_settings(DATASET_IMPORT_MAX_FILES=50000)
+    def test_import_file_limit_is_bounded(self):
+        self.assertEqual(_dataset_import_max_files(), 10000)
 
     @override_settings(DATASET_IMPORT_STORAGE_WORKERS=3)
     def test_storage_batch_runs_with_bounded_concurrency(self):

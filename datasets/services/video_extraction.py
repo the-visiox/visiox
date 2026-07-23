@@ -37,7 +37,6 @@ class Candidate:
     brightness: float
     quality: float
 
-
 def normalize_video_extraction_config(value: Any) -> dict:
     if value in (None, '', False):
         return {'enabled': False}

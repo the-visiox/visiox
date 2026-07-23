@@ -114,10 +114,15 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-# Dataset imports accept up to 500 files in one multipart request. Django's
-# default limit is 100, which rejects larger imports before DRF can validate
-# them and only returns a generic "Bad Request" response.
-DATA_UPLOAD_MAX_NUMBER_FILES = int(os.getenv('DATA_UPLOAD_MAX_NUMBER_FILES', '600'))
+# Large image datasets commonly contain thousands of files. Keep Django's
+# multipart parser and the import API limit aligned; direct-to-MinIO uploads do
+# not pass file bodies through Django, but their JSON descriptor list is still
+# validated against the same configurable ceiling.
+DATASET_IMPORT_MAX_FILES = int(os.getenv('DATASET_IMPORT_MAX_FILES', '5000'))
+DATA_UPLOAD_MAX_NUMBER_FILES = int(os.getenv(
+    'DATA_UPLOAD_MAX_NUMBER_FILES',
+    str(DATASET_IMPORT_MAX_FILES),
+))
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -197,10 +202,13 @@ SPECTACULAR_SETTINGS = {
 # When True, long jobs (augmentation) are dispatched to Celery workers; otherwise
 # they run in a background thread (fine for the dev server). Turn on in production.
 USE_CELERY = os.getenv('USE_CELERY', 'False') == 'True'
-# Keep Auto Label runnable from the API host until the dedicated datasets
-# worker has been deployed with the auto_label task. Enable explicitly after
-# that worker is updated.
-AUTO_LABEL_USE_CELERY = os.getenv('AUTO_LABEL_USE_CELERY', 'False') == 'True'
+# Production follows USE_CELERY by default. Override only for local development
+# or while deploying the dedicated datasets worker.
+AUTO_LABEL_USE_CELERY = os.getenv(
+    'AUTO_LABEL_USE_CELERY',
+    str(USE_CELERY),
+).lower() in ('1', 'true', 'yes')
+AUTO_LABEL_DATASET_BATCH_SIZE = max(1, int(os.getenv('AUTO_LABEL_DATASET_BATCH_SIZE', '32')))
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
@@ -231,6 +239,8 @@ TRAINING_LABEL_SOURCE = TRAINING_LABEL_DELIVERY
 TRAINING_AGENT_MINIO_ENDPOINT = os.getenv('TRAINING_AGENT_MINIO_ENDPOINT', '').rstrip('/')
 INFERENCE_API_URL = os.getenv('INFERENCE_API_URL', '').rstrip('/')
 INFERENCE_AGENT_TOKEN = os.getenv('INFERENCE_AGENT_TOKEN') or TRAINING_AGENT_TOKEN
+AUTO_LABEL_LOCAL_FALLBACK = os.getenv('AUTO_LABEL_LOCAL_FALLBACK', 'False').lower() in ('1', 'true', 'yes')
+AUTO_LABEL_LOCAL_DEVICE = os.getenv('AUTO_LABEL_LOCAL_DEVICE', '')
 
 # Storage — local by default, switch to MinIO via env
 USE_MINIO = os.getenv('USE_MINIO', 'False') == 'True'

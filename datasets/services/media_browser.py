@@ -100,11 +100,18 @@ def browser_payload(dataset: Dataset) -> dict:
     }
 
 
-def image_media_for_frame(dataset: Dataset, frame_num: int) -> Media | None:
-    images = list(ordered_image_media(dataset))
-    if frame_num < 0 or frame_num >= len(images):
+def image_media_for_frame(dataset: Dataset, frame_num: int, media_id: int | None = None) -> Media | None:
+    # A frame index is positional and can point at a different image after media
+    # are inserted or deleted. Gallery image URLs include the stable media id so
+    # a cached frame URL can never be paired with another image's annotations.
+    if media_id is not None:
+        return dataset.media_files.filter(type='image', id=media_id).first()
+    if frame_num < 0:
         return None
-    return images[frame_num]
+    # Do not materialize every image for each thumbnail request. Gallery pages
+    # request several thumbnails concurrently, so the previous implementation
+    # turned N thumbnail requests into N full dataset scans.
+    return ordered_image_media(dataset)[frame_num:frame_num + 1].first()
 
 
 def guess_content_type(media: Media) -> str:

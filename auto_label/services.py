@@ -1,7 +1,19 @@
+import hashlib
+import logging
 import math
+import os
+import tempfile
+import threading
+import time
+from pathlib import Path
 
 import requests
 from django.conf import settings
+
+
+logger = logging.getLogger(__name__)
+_LOCAL_MODEL_CACHE = {}
+_LOCAL_MODEL_LOCK = threading.Lock()
 
 
 class AutoLabelInferenceError(RuntimeError):
@@ -10,7 +22,7 @@ class AutoLabelInferenceError(RuntimeError):
 
 def inference_confidence(value):
     if value in (None, ''):
-        return 0.25
+        return 0.45
     try:
         confidence = float(value)
     except (TypeError, ValueError) as exc:
@@ -20,10 +32,188 @@ def inference_confidence(value):
     return confidence
 
 
+def _local_fallback_enabled():
+    return bool(getattr(settings, 'AUTO_LABEL_LOCAL_FALLBACK', False))
+
+
+def _local_model_path(model_spec):
+    from core.storage import get_artifacts_storage
+
+    storage_key = str(model_spec.get('storage_key') or '')
+    if not storage_key or Path(storage_key).suffix.lower() != '.pt':
+        raise AutoLabelInferenceError('Local fallback requires an Ultralytics .pt artifact.')
+    signature = str(
+        model_spec.get('checksum')
+        or model_spec.get('sha256')
+        or hashlib.sha256(storage_key.encode()).hexdigest()
+    )
+    cache_dir = Path(tempfile.gettempdir()) / 'visiox-auto-label-models'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    destination = cache_dir / f'{signature}.pt'
+    if destination.is_file() and destination.stat().st_size > 0:
+        return destination
+
+    storage = get_artifacts_storage()
+    temporary = destination.with_suffix(f'.{os.getpid()}.{threading.get_ident()}.tmp')
+    try:
+        with storage.open(storage_key, 'rb') as source, temporary.open('wb') as target:
+            while chunk := source.read(1024 * 1024):
+                target.write(chunk)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
+def _local_model(model_spec):
+    cache_key = str(
+        model_spec.get('checksum')
+        or model_spec.get('sha256')
+        or model_spec.get('storage_key')
+        or ''
+    )
+    with _LOCAL_MODEL_LOCK:
+        cached = _LOCAL_MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise AutoLabelInferenceError(
+                'Local Auto Label fallback requires the ultralytics package.'
+            ) from exc
+        model = YOLO(str(_local_model_path(model_spec)))
+        _LOCAL_MODEL_CACHE[cache_key] = model
+        return model
+
+
+def purge_temporary_model(model):
+    if not getattr(model, 'is_temporary', False):
+        return
+    storage_key = model.model_file.name if model.model_file else ''
+    cache_keys = {key for key in (model.checksum, storage_key) if key}
+    with _LOCAL_MODEL_LOCK:
+        for key in cache_keys:
+            _LOCAL_MODEL_CACHE.pop(key, None)
+    cache_dir = Path(tempfile.gettempdir()) / 'visiox-auto-label-models'
+    signatures = {model.checksum} if model.checksum else set()
+    if storage_key:
+        signatures.add(hashlib.sha256(storage_key.encode()).hexdigest())
+    for signature in signatures:
+        (cache_dir / f'{signature}.pt').unlink(missing_ok=True)
+    if storage_key:
+        model.model_file.storage.delete(storage_key)
+    model.model_file.name = ''
+    model.status = 'failed'
+    model.validation_error = 'Temporary model artifact removed after Auto Label.'
+    model.save(update_fields=['model_file', 'status', 'validation_error', 'updated_at'])
+
+
+def _local_predictions(payload):
+    import cv2
+    import numpy as np
+
+    from datasets.models import Media
+
+    model_spec = payload.get('model') or {}
+    dataset_spec = payload.get('dataset') or {}
+    dataset_id = dataset_spec.get('id')
+    media_ids = [int(media_id) for media_id in dataset_spec.get('media_ids') or []]
+    if not dataset_id or not media_ids:
+        raise AutoLabelInferenceError('Local fallback requires a dataset and at least one media id.')
+    if payload.get('output_type', 'bbox') != 'bbox':
+        raise AutoLabelInferenceError('The local detection fallback supports bounding boxes only.')
+
+    media_by_id = {
+        media.id: media
+        for media in Media.objects.filter(dataset_id=dataset_id, id__in=media_ids, type='image')
+    }
+    ordered_media = []
+    images = []
+    for media_id in media_ids:
+        media = media_by_id.get(media_id)
+        if media is None or not media.file:
+            continue
+        with media.file.open('rb') as source:
+            image = cv2.imdecode(np.frombuffer(source.read(), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            continue
+        ordered_media.append(media)
+        images.append(image)
+
+    if not images:
+        raise AutoLabelInferenceError('Local fallback could not read any requested dataset images.')
+
+    started_at = time.perf_counter()
+    predict_options = {
+        'conf': inference_confidence(payload.get('confidence')),
+        'verbose': False,
+    }
+    device = str(getattr(settings, 'AUTO_LABEL_LOCAL_DEVICE', '') or '').strip()
+    if device:
+        predict_options['device'] = device
+    results = _local_model(model_spec).predict(images, **predict_options)
+
+    predictions = []
+    predicted_images = 0
+    for media, result in zip(ordered_media, results):
+        boxes = result.boxes
+        if boxes is None or len(boxes) == 0:
+            continue
+        predicted_images += 1
+        names = result.names or {}
+        for xyxy, confidence, class_index in zip(
+            boxes.xyxy.cpu().tolist(),
+            boxes.conf.cpu().tolist(),
+            boxes.cls.cpu().tolist(),
+        ):
+            class_id = int(class_index)
+            predictions.append({
+                'media_id': media.id,
+                'label': str(names.get(class_id, class_id)),
+                'confidence': float(confidence),
+                'bbox': [float(value) for value in xyxy],
+                'bbox_format': 'xyxy',
+                'normalized': False,
+            })
+
+    return {
+        'dataset': int(dataset_id),
+        'model': int(model_spec.get('registry_id') or 0),
+        'predictions': predictions,
+        'summary': {
+            'total_images': len(ordered_media),
+            'predicted_images': predicted_images,
+            'total_predictions': len(predictions),
+            'latency_ms': round((time.perf_counter() - started_at) * 1000, 2),
+            'engine': 'local_ultralytics_fallback',
+        },
+    }
+
+
+def _fallback_predictions(payload, remote_error):
+    if not _local_fallback_enabled():
+        raise remote_error
+    logger.warning('Inference agent unavailable; using local Ultralytics fallback: %s', remote_error)
+    try:
+        return _local_predictions(payload)
+    except Exception as exc:
+        if isinstance(exc, AutoLabelInferenceError):
+            local_error = exc
+        else:
+            local_error = AutoLabelInferenceError(str(exc))
+        raise AutoLabelInferenceError(
+            f'{remote_error} Local fallback also failed: {local_error}'
+        ) from exc
+
+
 def request_predictions(payload):
     inference_url = getattr(settings, 'INFERENCE_API_URL', '').rstrip('/')
     if not inference_url:
-        raise AutoLabelInferenceError('INFERENCE_API_URL is not configured on the backend.')
+        return _fallback_predictions(
+            payload,
+            AutoLabelInferenceError('INFERENCE_API_URL is not configured on the backend.'),
+        )
     headers = {}
     if settings.INFERENCE_AGENT_TOKEN:
         headers['Authorization'] = f'Bearer {settings.INFERENCE_AGENT_TOKEN}'
@@ -35,10 +225,18 @@ def request_predictions(payload):
             timeout=120,
         )
     except requests.RequestException as exc:
-        raise AutoLabelInferenceError(f'Inference server request failed: {exc}') from exc
+        return _fallback_predictions(
+            payload,
+            AutoLabelInferenceError(f'Inference server request failed: {exc}'),
+        )
     if not response.ok:
         detail = response.text.strip() or response.reason
-        raise AutoLabelInferenceError(f'Inference agent returned HTTP {response.status_code}: {detail[:500]}')
+        remote_error = AutoLabelInferenceError(
+            f'Inference agent returned HTTP {response.status_code}: {detail[:500]}'
+        )
+        if response.status_code >= 500:
+            return _fallback_predictions(payload, remote_error)
+        raise remote_error
     try:
         result = response.json()
     except ValueError as exc:

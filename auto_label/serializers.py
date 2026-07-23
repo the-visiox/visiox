@@ -1,4 +1,5 @@
 import hashlib
+import tempfile
 from pathlib import Path
 
 from rest_framework import serializers
@@ -6,6 +7,47 @@ from rest_framework import serializers
 from auto_label.models import AutoLabelModel
 from core.access import project_access_q
 from projects.models import Project
+
+
+def inspect_ultralytics_model(model_file):
+    checksum = hashlib.sha256()
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+            for chunk in model_file.chunks():
+                checksum.update(chunk)
+                temporary.write(chunk)
+        model_file.seek(0)
+        try:
+            from ultralytics import YOLO
+            model = YOLO(str(temporary_path))
+        except Exception as exc:
+            raise serializers.ValidationError({
+                'model_file': f'Could not read this Ultralytics model: {exc}',
+            }) from exc
+        task = str(model.task or '').lower()
+        if task not in ('detect', 'segment'):
+            raise serializers.ValidationError({
+                'model_file': f'Unsupported Ultralytics task "{task or "unknown"}". Use detect or segment.',
+            })
+        raw_names = model.names or {}
+        if isinstance(raw_names, dict):
+            class_names = [str(raw_names[index]) for index in sorted(raw_names, key=lambda value: int(value))]
+        else:
+            class_names = [str(name) for name in raw_names]
+        if not class_names:
+            raise serializers.ValidationError({'model_file': 'The model does not declare any class names.'})
+        return {
+            'checksum': checksum.hexdigest(),
+            'task_type': 'instance_segmentation' if task == 'segment' else 'object_detection',
+            'capabilities': ['bbox', 'polygon'] if task == 'segment' else ['bbox'],
+            'class_names': class_names,
+        }
+    finally:
+        model_file.seek(0)
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 class AutoLabelModelSerializer(serializers.ModelSerializer):
@@ -16,12 +58,12 @@ class AutoLabelModelSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'project', 'name', 'version', 'family', 'framework',
             'task_type', 'capabilities', 'class_names', 'model_file',
-            'file_size', 'checksum', 'status', 'validation_error',
+            'file_size', 'checksum', 'status', 'validation_error', 'is_temporary',
             'created_by', 'created_at', 'updated_at',
         ]
         read_only_fields = [
             'id', 'family', 'framework', 'capabilities', 'file_size',
-            'checksum', 'status', 'validation_error', 'created_by',
+            'checksum', 'status', 'validation_error', 'is_temporary', 'created_by',
             'created_at', 'updated_at',
         ]
         extra_kwargs = {
@@ -55,18 +97,15 @@ class AutoLabelModelSerializer(serializers.ModelSerializer):
         model_file = validated_data['model_file']
         validated_data.setdefault('name', Path(model_file.name).stem)
         validated_data.setdefault('version', '1.0.0')
-        validated_data.setdefault('task_type', 'object_detection')
-        validated_data.setdefault('class_names', [])
-        task_type = validated_data['task_type']
-        checksum = hashlib.sha256()
-        for chunk in model_file.chunks():
-            checksum.update(chunk)
-        model_file.seek(0)
+        metadata = inspect_ultralytics_model(model_file)
+        validated_data['task_type'] = metadata['task_type']
+        validated_data['class_names'] = metadata['class_names']
         validated_data.update({
             'created_by': self.context['request'].user,
             'file_size': model_file.size,
-            'checksum': checksum.hexdigest(),
-            'capabilities': ['bbox', 'polygon'] if task_type == 'instance_segmentation' else ['bbox'],
+            'checksum': metadata['checksum'],
+            'capabilities': metadata['capabilities'],
             'status': 'ready',
+            'is_temporary': True,
         })
         return super().create(validated_data)

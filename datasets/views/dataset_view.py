@@ -56,6 +56,8 @@ DEFAULT_IMPORT_STORAGE_WORKERS = 4
 MAX_IMPORT_STORAGE_WORKERS = 16
 DEFAULT_IMPORT_BATCH_SIZE = 16
 DEFAULT_DIRECT_UPLOAD_EXPIRES = 3600
+DEFAULT_IMPORT_MAX_FILES = 5000
+MAX_IMPORT_FILES = 10000
 
 
 def _dataset_import_storage_workers() -> int:
@@ -66,6 +68,11 @@ def _dataset_import_storage_workers() -> int:
 def _dataset_import_batch_size() -> int:
     configured = int(getattr(settings, 'DATASET_IMPORT_BATCH_SIZE', DEFAULT_IMPORT_BATCH_SIZE))
     return max(1, configured)
+
+
+def _dataset_import_max_files() -> int:
+    configured = int(getattr(settings, 'DATASET_IMPORT_MAX_FILES', DEFAULT_IMPORT_MAX_FILES))
+    return max(1, min(configured, MAX_IMPORT_FILES))
 
 
 def _chunked(items: list, size: int):
@@ -1488,7 +1495,12 @@ class DatasetViewSet(viewsets.ModelViewSet):
         replace_existing = str(request.data.get('replace_existing', '')).strip().lower() in ('1', 'true', 'yes', 'on')
         files = request.FILES.getlist('files') or ([request.FILES['file']] if 'file' in request.FILES else [])
         try:
-            _validate_dataset_import_files(dataset, import_format, files, max_files=500)
+            _validate_dataset_import_files(
+                dataset,
+                import_format,
+                files,
+                max_files=_dataset_import_max_files(),
+            )
             import_options = _dataset_import_options(
                 request.data.get('video_extraction'),
                 import_format,
@@ -1534,7 +1546,12 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     size=size,
                     content_type=str(item.get('content_type') or 'application/octet-stream'),
                 ))
-            _validate_dataset_import_files(dataset, import_format, files, max_files=500)
+            _validate_dataset_import_files(
+                dataset,
+                import_format,
+                files,
+                max_files=_dataset_import_max_files(),
+            )
             import_options = _dataset_import_options(
                 request.data.get('video_extraction'),
                 import_format,
@@ -1827,7 +1844,9 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
         dataset = self.get_object()
         try:
-            media = image_media_for_frame(dataset, int(frame_num))
+            expected_media_id = request.query_params.get('media_id')
+            media_id = int(expected_media_id) if expected_media_id is not None else None
+            media = image_media_for_frame(dataset, int(frame_num), media_id=media_id)
         except (TypeError, ValueError):
             return HttpResponse(b'Invalid frame', status=400, content_type='text/plain')
         if not media or not media.file:
