@@ -242,6 +242,10 @@ Thêm service sau dưới `services:`:
 Worker không cần `ports`. Tất cả kết nối đều do worker chủ động mở tới service
 nội bộ.
 
+`Dockerfile.worker` dùng `requirements.worker.txt`, không cài
+`ultralytics`/PyTorch/CUDA. Inference của worker được gửi tới Inference Agent;
+việc giữ các gói GPU ngoài image giúp build nhanh và image nhỏ hơn.
+
 Auto Label toàn dataset cũng chạy trên worker này. `.env.worker` cần có:
 
 ```env

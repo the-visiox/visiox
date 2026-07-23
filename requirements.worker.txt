@@ -1,0 +1,22 @@
+# Dataset worker dependencies. Keep this list aligned with requirements.txt,
+# but do not install ultralytics/PyTorch: inference runs on the remote agent and
+# AUTO_LABEL_LOCAL_FALLBACK must remain disabled on this CPU worker.
+django==6.0.1
+python-dotenv==1.2.1
+djangorestframework==3.16.1
+psycopg2-binary==2.9.11
+django-filter==25.2
+djangorestframework-simplejwt==5.5.1
+drf-spectacular==0.29.0
+Pillow==12.2.0
+celery==5.6.3
+redis==7.4.0
+stripe==15.0.1
+django-storages==1.14.6
+boto3==1.42.81
+django-silk==5.5.0
+django-cors-headers==4.9.0
+django-celery-beat==2.9.0
+requests>=2.31.0
+albumentations==2.0.8
+numpy>=1.24.0
