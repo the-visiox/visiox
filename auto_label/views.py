@@ -203,6 +203,8 @@ class ObjectPropagationView(APIView):
             status__in=('queued', 'running'),
         ).select_related('class_label').first()
         if active:
+            if active.status == 'queued':
+                enqueue_object_propagation_job(active.id)
             return Response(propagation_job_payload(active), status=status.HTTP_200_OK)
         remaining = ordered_image_media(dataset)[frame_num + 1:].count()
         total = min(remaining, max_frames) if max_frames else remaining
@@ -229,14 +231,27 @@ class ObjectPropagationJobView(APIView):
     throttle_classes = []
 
     def get(self, request, dataset_id, job_id):
+        job = self._job(request, dataset_id, job_id)
+        if job is None:
+            return Response({'error': 'Object propagation job not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(propagation_job_payload(job))
+
+    def post(self, request, dataset_id, job_id):
+        job = self._job(request, dataset_id, job_id)
+        if job is None:
+            return Response({'error': 'Object propagation job not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if job.status == 'queued':
+            enqueue_object_propagation_job(job.id)
+        return Response(propagation_job_payload(job), status=status.HTTP_202_ACCEPTED)
+
+    @staticmethod
+    def _job(request, dataset_id, job_id):
         job = ObjectPropagationJob.objects.filter(
             project_access_q(request.user, 'dataset__project__'),
             dataset_id=dataset_id,
             pk=job_id,
         ).select_related('class_label').first()
-        if job is None:
-            return Response({'error': 'Object propagation job not found.'}, status=status.HTTP_404_NOT_FOUND)
-        return Response(propagation_job_payload(job))
+        return job
 
 
 class FrameAutoLabelPredictView(APIView):

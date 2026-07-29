@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+import uuid
 
 import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -15,6 +16,11 @@ from auto_label.services import (
     request_predictions,
 )
 from auto_label.propagation import bbox_iou, crop_bbox, normalize_bbox, track_next_bbox
+from auto_label.tasks import (
+    DUPLICATE_IOU_THRESHOLD,
+    _assign_track,
+    _best_overlapping_annotation,
+)
 
 
 class AutoLabelGeometryTests(SimpleTestCase):
@@ -128,3 +134,37 @@ class ObjectPropagationTests(SimpleTestCase):
         self.assertGreaterEqual(confidence, 0.7)
         self.assertLess(abs(tracked['x'] - 66), 2)
         self.assertLess(abs(tracked['y'] - 47), 2)
+
+    def test_existing_overlapping_annotation_is_linked_to_track(self):
+        selected = SimpleNamespace(
+            data={'x': 10, 'y': 10, 'width': 30, 'height': 40},
+            track_id=None,
+            save=Mock(),
+        )
+        other = SimpleNamespace(
+            data={'x': 80, 'y': 80, 'width': 10, 'height': 10},
+            track_id=None,
+            save=Mock(),
+        )
+        bbox = {'x': 11, 'y': 11, 'width': 30, 'height': 40}
+
+        match = _best_overlapping_annotation(bbox, [other, selected], bbox_iou)
+        track_id = uuid.uuid4()
+        _assign_track(match, track_id)
+
+        self.assertIs(match, selected)
+        self.assertEqual(selected.track_id, track_id)
+        selected.save.assert_called_once_with(update_fields=['track_id', 'updated_at'])
+
+    def test_duplicate_requires_iou_above_seventy_five_percent(self):
+        existing = SimpleNamespace(
+            data={'x': 10, 'y': 10, 'width': 70, 'height': 40},
+            track_id=None,
+        )
+        exactly_seventy_five = {'x': 20, 'y': 10, 'width': 70, 'height': 40}
+
+        self.assertEqual(DUPLICATE_IOU_THRESHOLD, 0.75)
+        self.assertAlmostEqual(bbox_iou(exactly_seventy_five, existing.data), 0.75)
+        self.assertIsNone(
+            _best_overlapping_annotation(exactly_seventy_five, [existing], bbox_iou)
+        )

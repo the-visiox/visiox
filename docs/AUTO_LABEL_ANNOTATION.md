@@ -377,7 +377,10 @@ filesystem/MinIO, tìm object theo template đa tỉ lệ, bỏ qua bbox trùng 
 annotation hiện có và lưu các kết quả với cùng một `track_id`.
 
 Job tiếp tục chạy khi người dùng đóng dialog. Frontend poll endpoint job để hiển
-thị số frame đã quét, số frame match và số annotation đã lưu.
+thị số frame đã quét, số frame match và số annotation đã lưu. Nếu job vẫn ở
+`queued` sau ba lần poll, frontend gọi `POST` vào endpoint job để gửi lại message.
+Task dùng phép claim nguyên tử theo trạng thái nên message gửi lặp không tạo
+annotation trùng.
 
 ## 8. Frontend implementation
 

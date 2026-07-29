@@ -7,6 +7,34 @@ from django.conf import settings
 
 
 logger = logging.getLogger(__name__)
+_BBOX_KEYS = ('x', 'y', 'width', 'height')
+DUPLICATE_IOU_THRESHOLD = 0.75
+
+
+def _best_overlapping_annotation(
+    bbox,
+    annotations,
+    bbox_iou,
+    threshold=DUPLICATE_IOU_THRESHOLD,
+):
+    best_annotation = None
+    best_iou = threshold
+    for annotation in annotations:
+        data = annotation.data or {}
+        if not all(key in data for key in _BBOX_KEYS):
+            continue
+        overlap = bbox_iou(bbox, data)
+        if overlap > best_iou:
+            best_annotation = annotation
+            best_iou = overlap
+    return best_annotation
+
+
+def _assign_track(annotation, track_id):
+    if annotation.track_id == track_id:
+        return
+    annotation.track_id = track_id
+    annotation.save(update_fields=['track_id', 'updated_at'])
 
 
 def run_auto_label_dataset_job(job_id):
@@ -178,12 +206,17 @@ def run_object_propagation_job(job_id):
     from datasets.services.media_browser import ordered_image_media
     from datasets.tasks import enqueue_dataset_label_cache_clear
 
+    claimed = ObjectPropagationJob.objects.filter(
+        pk=job_id,
+        status='queued',
+    ).update(status='running', error='')
+    if not claimed:
+        logger.info('Skipping propagation job %s because it is no longer queued.', job_id)
+        return
+
     job = ObjectPropagationJob.objects.select_related(
         'dataset', 'class_label', 'source_media', 'created_by',
     ).get(pk=job_id)
-    job.status = 'running'
-    job.error = ''
-    job.save(update_fields=['status', 'error', 'updated_at'])
 
     try:
         media_items = list(ordered_image_media(job.dataset))
@@ -209,13 +242,22 @@ def run_object_propagation_job(job_id):
         previous_template = seed_template
         previous_height, previous_width = source_image.shape[:2]
         existing_by_media = {}
-        for media_id, data in Annotation.objects.filter(
-            media_id__in=[media.id for media in targets],
+        relevant_media_ids = [job.source_media_id, *(media.id for media in targets)]
+        for annotation in Annotation.objects.filter(
+            media_id__in=relevant_media_ids,
             class_label=job.class_label,
             is_valid=True,
             type__in=('bbox', 'rectangle'),
-        ).values_list('media_id', 'data'):
-            existing_by_media.setdefault(media_id, []).append(data or {})
+        ).only('id', 'media_id', 'data', 'track_id'):
+            existing_by_media.setdefault(annotation.media_id, []).append(annotation)
+
+        source_annotation = _best_overlapping_annotation(
+            seed_bbox,
+            existing_by_media.get(job.source_media_id, []),
+            bbox_iou,
+        )
+        if source_annotation is not None:
+            _assign_track(source_annotation, job.track_id)
 
         matched = 0
         saved = 0
@@ -240,13 +282,16 @@ def run_object_propagation_job(job_id):
                     bbox, confidence, next_template = result
                     bbox = {key: round(float(value), 2) for key, value in bbox.items()}
                     matched += 1
-                    duplicate = any(
-                        bbox_iou(bbox, existing) >= 0.7
-                        for existing in existing_by_media.get(media.id, [])
-                        if all(key in existing for key in ('x', 'y', 'width', 'height'))
+                    existing_annotation = _best_overlapping_annotation(
+                        bbox,
+                        existing_by_media.get(media.id, []),
+                        bbox_iou,
                     )
-                    if not duplicate:
-                        Annotation.objects.create(
+                    if existing_annotation is not None:
+                        _assign_track(existing_annotation, job.track_id)
+                        saved += 1
+                    else:
+                        created = Annotation.objects.create(
                             media=media,
                             class_label=job.class_label,
                             annotator=job.created_by,
@@ -262,7 +307,7 @@ def run_object_propagation_job(job_id):
                             frame=0,
                             track_id=job.track_id,
                         )
-                        existing_by_media.setdefault(media.id, []).append(bbox)
+                        existing_by_media.setdefault(media.id, []).append(created)
                         saved += 1
                     previous_bbox = bbox
                     previous_template = next_template
