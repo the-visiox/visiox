@@ -56,6 +56,9 @@ def run_auto_label_dataset_job(job_id):
     try:
         dataset = job.dataset
         model = job.model
+        source = job.source or (
+            {'kind': 'uploaded_model', 'model_id': model.id} if model else {}
+        )
         media_items = list(dataset.media_files.filter(type='image').order_by('uploaded_at', 'id').only(
             'id', 'width', 'height', 'dataset_id',
         ))
@@ -78,30 +81,49 @@ def run_auto_label_dataset_job(job_id):
         for offset in range(0, len(media_items), batch_size):
             batch = media_items[offset:offset + batch_size]
             media_by_id = {item.id: item for item in batch}
-            engine = {
-                'provider': 'uploaded_yolo',
-                'model_id': model.id,
-                'name': model.name,
-                'version': model.version,
-                'format': 'pt',
-                'task_type': model.task_type,
-                'storage_key': model.model_file.name,
-                'checksum': model.checksum,
-            }
-            result = request_predictions({
-                'engine': engine,
-                'model': {
+            if source.get('kind') == 'provider':
+                provider_id = source['provider']
+                engine = {
+                    'provider': provider_id,
+                    'model': source['model'],
+                    'prompts': source['prompts'],
+                }
+                compatibility_model = None
+                auto_label_source = 'provider'
+                engine_name = source['model']
+            else:
+                if model is None:
+                    raise ValueError('Uploaded Auto Label model is missing.')
+                provider_id = 'uploaded_yolo'
+                engine = {
+                    'provider': provider_id,
+                    'model_id': model.id,
+                    'name': model.name,
+                    'version': model.version,
+                    'format': 'pt',
+                    'task_type': model.task_type,
+                    'storage_key': model.model_file.name,
+                    'checksum': model.checksum,
+                }
+                compatibility_model = {
                     'registry_id': model.id,
                     'name': model.name,
                     'version': model.version,
                     'format': 'pt',
                     'storage_key': model.model_file.name,
                     'checksum': model.checksum,
-                },
+                }
+                auto_label_source = 'uploaded_model'
+                engine_name = model.name
+            payload = {
+                'engine': engine,
                 'dataset': {'id': dataset.id, 'media_ids': list(media_by_id)},
                 'output_type': job.output_type,
                 'confidence': job.confidence,
-            })
+            }
+            if compatibility_model:
+                payload['model'] = compatibility_model
+            result = request_predictions(payload)
             profiling = result.get('profiling') or result.get('summary')
             if profiling:
                 logger.info(
@@ -153,10 +175,10 @@ def run_auto_label_dataset_job(job_id):
                         **data,
                         'source': 'auto_label',
                         'confidence': prediction.get('confidence'),
-                        'auto_label_source': 'uploaded_model',
-                        'auto_label_model_id': model.id,
-                        'auto_label_provider': 'uploaded_yolo',
-                        'auto_label_engine_name': model.name,
+                        'auto_label_source': auto_label_source,
+                        'auto_label_model_id': model.id if model else None,
+                        'auto_label_provider': provider_id,
+                        'auto_label_engine_name': engine_name,
                     },
                     frame=0,
                 ))
@@ -183,7 +205,8 @@ def run_auto_label_dataset_job(job_id):
         job.save(update_fields=['status', 'error', 'updated_at'])
         raise
     finally:
-        purge_temporary_model(job.model)
+        if job.model:
+            purge_temporary_model(job.model)
 
 
 @shared_task(bind=True, max_retries=0)

@@ -1,14 +1,7 @@
-"""
-Export dataset annotations in multiple formats.
-
-Every exporter returns a ``BytesIO`` containing a ``.zip`` archive and accepts a
-``save_images`` flag to optionally bundle the source images alongside the labels.
-
-Supported formats: COCO, YOLO, Pascal VOC, segmentation mask, COCO keypoints,
-ImageNet.
-"""
 import json
+import os
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 
 from PIL import Image, ImageDraw
@@ -27,8 +20,7 @@ def _get_media(dataset: Dataset):
 
 
 def _bbox(data: dict):
-    """Return (x, y, w, h). Supports both {width,height} (native editor) and
-    {w,h} (legacy/imported) payloads."""
+    # Return (x, y, w, h). Supports both {width,height} and {w,h} payloads.
     x = data.get('x', 0) or 0
     y = data.get('y', 0) or 0
     w = data.get('width', data.get('w', 0)) or 0
@@ -37,15 +29,15 @@ def _bbox(data: dict):
 
 
 def _bbox_from_points(pts):
-    xs, ys = pts[0::2], pts[1::2]
-    if not xs or not ys:
+    xs, pts_ys = pts[0::2], pts[1::2]
+    if not xs or not pts_ys:
         return 0, 0, 0, 0
-    x, y = min(xs), min(ys)
-    return x, y, max(xs) - x, max(ys) - y
+    x, y = min(xs), min(pts_ys)
+    return x, y, max(xs) - x, max(pts_ys) - y
 
 
 def _image_names(media_qs) -> dict:
-    """media.id -> unique archive filename (keeps original names, de-dupes)."""
+    # media.id -> unique archive filename (keeps original names, de-dupes).
     names, seen = {}, set()
     for m in media_qs:
         base = m.original_filename or f"{m.id}.jpg"
@@ -58,16 +50,119 @@ def _image_names(media_qs) -> dict:
     return names
 
 
-def _add_image(zf: zipfile.ZipFile, media, arcname: str, folder: str = IMAGE_DIR):
-    """Copy a media file into the archive; silently skip if unreadable."""
+def _read_media_bytes(media) -> bytes | None:
     try:
         f = media.file.open('rb')
         try:
-            zf.writestr(f"{folder}/{arcname}", f.read())
+            return f.read()
         finally:
             f.close()
     except Exception:
+        return None
+
+
+def _preload_media_data(media_qs) -> dict:
+    # Fetch media files concurrently to eliminate serial network/disk latency.
+    media_list = list(media_qs)
+    if not media_list:
+        return {}
+
+    if len(media_list) <= 2:
+        results = {}
+        for m in media_list:
+            b = _read_media_bytes(m)
+            if b is not None:
+                results[m.id] = b
+        return results
+
+    results = {}
+    max_workers = min(16, (os.cpu_count() or 4) * 4)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {pool.submit(_read_media_bytes, m): m.id for m in media_list}
+        for future in future_map:
+            mid = future_map[future]
+            try:
+                content = future.result()
+                if content is not None:
+                    results[mid] = content
+            except Exception:
+                pass
+    return results
+
+
+def _add_image(zf: zipfile.ZipFile, media, arcname: str, folder: str = IMAGE_DIR, data: bytes | None = None):
+    # Copy media into archive with ZIP_STORED because images are already compressed.
+    try:
+        content = data if data is not None else _read_media_bytes(media)
+        if content is not None:
+            zf.writestr(f"{folder}/{arcname}", content, compress_type=zipfile.ZIP_STORED)
+    except Exception:
         pass
+
+
+def _yolo_lines(media, class_idx: dict) -> list[str]:
+    width = media.width or 1
+    height = media.height or 1
+    lines = []
+    for ann in media.annotations.all():
+        if ann.type not in ('bbox', 'rectangle'):
+            continue
+        bx, by, bw, bh = _bbox(ann.data or {})
+        cx = (bx + bw / 2) / width
+        cy = (by + bh / 2) / height
+        cls_id = class_idx.get(ann.class_label_id, 0)
+        lines.append(
+            f"{cls_id} {cx:.6f} {cy:.6f} "
+            f"{bw / width:.6f} {bh / height:.6f}"
+        )
+    return lines
+
+
+def _yolo_data_yaml(classes, include_test: bool) -> str:
+    lines = [
+        'path: .',
+        'train: train/images',
+        'val: valid/images',
+    ]
+    if include_test:
+        lines.append('test: test/images')
+    lines.extend(['', f'nc: {len(classes)}', 'names:'])
+    lines.extend(
+        f'  {index}: {json.dumps(label.name, ensure_ascii=False)}'
+        for index, label in enumerate(classes)
+    )
+    return '\n'.join(lines) + '\n'
+
+
+def _yolo_data_yaml_flat(classes) -> str:
+    lines = [
+        'path: .',
+        'train: images',
+        'val: images',
+        '',
+        f'nc: {len(classes)}',
+        'names:',
+    ]
+    lines.extend(
+        f'  {index}: {json.dumps(label.name, ensure_ascii=False)}'
+        for index, label in enumerate(classes)
+    )
+    return '\n'.join(lines) + '\n'
+
+
+def _fixed_test_media(dataset: Dataset):
+    test_dataset_id = (dataset.split_config or {}).get('test_dataset_id')
+    if not test_dataset_id:
+        return []
+    try:
+        test_dataset = Dataset.objects.get(pk=test_dataset_id, project=dataset.project)
+    except Dataset.DoesNotExist:
+        return []
+    return [
+        media
+        for media in _get_media(test_dataset).filter(type='image').exclude(file='')
+        if (media.metadata or {}).get('category') != 'augmented'
+    ]
 
 
 # ── COCO ─────────────────────────────────────────────────────────────────────
@@ -94,6 +189,7 @@ def _coco_entry(ann, ann_id: int, category_map: dict):
 
 def export_coco(dataset: Dataset, save_images: bool = False) -> BytesIO:
     media_qs = _get_media(dataset)
+    media_data = _preload_media_data(media_qs) if save_images else {}
     names = _image_names(media_qs)
     classes = list(dataset.project.classes.all())
     category_map = {c.id: idx + 1 for idx, c in enumerate(classes)}
@@ -117,7 +213,7 @@ def export_coco(dataset: Dataset, save_images: bool = False) -> BytesIO:
                     annotations.append(entry)
                     ann_id += 1
             if save_images:
-                _add_image(zf, m, names[m.id])
+                _add_image(zf, m, names[m.id], data=media_data.get(m.id))
 
         coco = {
             'info': {'description': dataset.name, 'version': str(dataset.version)},
@@ -131,8 +227,10 @@ def export_coco(dataset: Dataset, save_images: bool = False) -> BytesIO:
 # ── YOLO ─────────────────────────────────────────────────────────────────────
 
 def export_yolo(dataset: Dataset, save_images: bool = False) -> BytesIO:
-    """classes.txt + per-image labels/<name>.txt (normalized bbox)."""
     media_qs = _get_media(dataset)
+    fixed_test = _fixed_test_media(dataset)
+    all_media = list(media_qs) + (list(fixed_test) if fixed_test else [])
+    media_data = _preload_media_data(all_media) if save_images else {}
     names = _image_names(media_qs)
     classes = list(dataset.project.classes.all())
     class_idx = {c.id: idx for idx, c in enumerate(classes)}
@@ -140,22 +238,42 @@ def export_yolo(dataset: Dataset, save_images: bool = False) -> BytesIO:
     buf = BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.writestr('classes.txt', '\n'.join(c.name for c in classes))
+
+        split_media = {'train': [], 'val': [], 'test': []}
         for m in media_qs:
-            w = m.width or 1
-            h = m.height or 1
-            lines = []
-            for ann in m.annotations.all():
-                if ann.type not in ('bbox', 'rectangle'):
-                    continue
-                bx, by, bw, bh = _bbox(ann.data or {})
-                cx = (bx + bw / 2) / w
-                cy = (by + bh / 2) / h
-                cls_id = class_idx.get(ann.class_label_id, 0)
-                lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {bw / w:.6f} {bh / h:.6f}")
-            stem = names[m.id].rsplit('.', 1)[0]
-            zf.writestr(f'labels/{stem}.txt', '\n'.join(lines))
-            if save_images:
-                _add_image(zf, m, names[m.id])
+            split = (m.metadata or {}).get('split')
+            if split in split_media:
+                split_media[split].append(m)
+
+        has_split = bool(dataset.split_config) and bool(
+            split_media['train'] or split_media['val'] or split_media['test'] or fixed_test
+        )
+        if has_split:
+            if fixed_test:
+                split_media['test'] = fixed_test
+            split_names = {'train': 'train', 'val': 'valid', 'test': 'test'}
+            for split, folder in split_names.items():
+                members = split_media[split]
+                member_names = names if split != 'test' or not fixed_test else _image_names(members)
+                if members:
+                    zf.writestr(f'{folder}/images/', '')
+                    zf.writestr(f'{folder}/labels/', '')
+                for m in members:
+                    filename = member_names[m.id]
+                    stem = filename.rsplit('.', 1)[0]
+                    label_lines = _yolo_lines(m, class_idx)
+                    zf.writestr(f'{folder}/labels/{stem}.txt', '\n'.join(label_lines))
+                    if save_images:
+                        _add_image(zf, m, filename, folder=f'{folder}/images', data=media_data.get(m.id))
+            zf.writestr('data.yaml', _yolo_data_yaml(classes, bool(split_media['test'])))
+        else:
+            for m in media_qs:
+                label_lines = _yolo_lines(m, class_idx)
+                stem = names[m.id].rsplit('.', 1)[0]
+                zf.writestr(f'labels/{stem}.txt', '\n'.join(label_lines))
+                if save_images:
+                    _add_image(zf, m, names[m.id], data=media_data.get(m.id))
+            zf.writestr('data.yaml', _yolo_data_yaml_flat(classes))
     buf.seek(0)
     return buf
 
@@ -188,6 +306,7 @@ def _voc_xml(media, filename: str) -> str:
 
 def export_voc(dataset: Dataset, save_images: bool = False) -> BytesIO:
     media_qs = _get_media(dataset)
+    media_data = _preload_media_data(media_qs) if save_images else {}
     names = _image_names(media_qs)
     buf = BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -195,7 +314,7 @@ def export_voc(dataset: Dataset, save_images: bool = False) -> BytesIO:
             stem = names[m.id].rsplit('.', 1)[0]
             zf.writestr(f'Annotations/{stem}.xml', _voc_xml(m, names[m.id]))
             if save_images:
-                _add_image(zf, m, names[m.id], folder='JPEGImages')
+                _add_image(zf, m, names[m.id], folder='JPEGImages', data=media_data.get(m.id))
     buf.seek(0)
     return buf
 
@@ -203,10 +322,8 @@ def export_voc(dataset: Dataset, save_images: bool = False) -> BytesIO:
 # ── Segmentation mask ──────────────────────────────────────────────────────────
 
 def export_segmentation_mask(dataset: Dataset, save_images: bool = False) -> BytesIO:
-    """Grayscale index masks (PNG) from polygons + boxes, plus labelmap.txt.
-
-    Pixel value 0 = background; each class maps to its 1-based index."""
     media_qs = _get_media(dataset)
+    media_data = _preload_media_data(media_qs) if save_images else {}
     names = _image_names(media_qs)
     classes = list(dataset.project.classes.all())
     idx = {c.id: i + 1 for i, c in enumerate(classes)}
@@ -238,7 +355,7 @@ def export_segmentation_mask(dataset: Dataset, save_images: bool = False) -> Byt
             stem = names[m.id].rsplit('.', 1)[0]
             zf.writestr(f'masks/{stem}.png', png.getvalue())
             if save_images:
-                _add_image(zf, m, names[m.id])
+                _add_image(zf, m, names[m.id], data=media_data.get(m.id))
     buf.seek(0)
     return buf
 
@@ -247,11 +364,11 @@ def export_segmentation_mask(dataset: Dataset, save_images: bool = False) -> Byt
 
 def export_coco_keypoints(dataset: Dataset, save_images: bool = False) -> BytesIO:
     media_qs = _get_media(dataset)
+    media_data = _preload_media_data(media_qs) if save_images else {}
     names = _image_names(media_qs)
     classes = list(dataset.project.classes.all())
     category_map = {c.id: idx + 1 for idx, c in enumerate(classes)}
 
-    # Keypoint count per class = the largest point set seen for that class.
     max_kp = {c.id: 0 for c in classes}
     for m in media_qs:
         for ann in m.annotations.all():
@@ -300,7 +417,7 @@ def export_coco_keypoints(dataset: Dataset, save_images: bool = False) -> BytesI
                 })
                 ann_id += 1
             if save_images:
-                _add_image(zf, m, names[m.id])
+                _add_image(zf, m, names[m.id], data=media_data.get(m.id))
 
         coco = {
             'info': {'description': dataset.name, 'version': str(dataset.version)},
@@ -314,9 +431,8 @@ def export_coco_keypoints(dataset: Dataset, save_images: bool = False) -> BytesI
 # ── ImageNet ────────────────────────────────────────────────────────────────────
 
 def export_imagenet(dataset: Dataset, save_images: bool = False) -> BytesIO:
-    """Classification layout from tag annotations: labels.txt mapping plus, when
-    requested, images grouped into one folder per class (<class>/<file>)."""
     media_qs = _get_media(dataset)
+    media_data = _preload_media_data(media_qs) if save_images else {}
     names = _image_names(media_qs)
 
     buf = BytesIO()
@@ -332,7 +448,7 @@ def export_imagenet(dataset: Dataset, save_images: bool = False) -> BytesIO:
             for name in tag_classes:
                 labels.append(f"{names[m.id]} {name}")
                 if save_images:
-                    _add_image(zf, m, names[m.id], folder=name)
+                    _add_image(zf, m, names[m.id], folder=name, data=media_data.get(m.id))
         zf.writestr('labels.txt', '\n'.join(labels))
     buf.seek(0)
     return buf

@@ -36,7 +36,8 @@ def process_dataset_import_task(self, job_id: int):
 
 
 def enqueue_dataset_import_job(job_id: int) -> None:
-    if getattr(settings, 'USE_CELERY', False):
+    use_celery = getattr(settings, 'DATASET_IMPORT_USE_CELERY', getattr(settings, 'USE_CELERY', False))
+    if use_celery:
         process_dataset_import_task.apply_async(args=[job_id], queue='datasets')
         return
     threading.Thread(

@@ -134,7 +134,14 @@ class DatasetExportViewTests(TestCase):
         response = self.client.get(self.url, {'format': 'yolo'})
 
         with self.assert_zip_response(response) as archive:
-            self.assertIn('classes.txt', archive.namelist())
+            members = archive.namelist()
+            self.assertIn('classes.txt', members)
+            self.assertIn('labels/sample.txt', members)
+            # data.yaml is now always included, even for un-split datasets
+            self.assertIn('data.yaml', members)
+            data_yaml = archive.read('data.yaml').decode()
+            self.assertIn('train: images', data_yaml)
+            self.assertIn('val: images', data_yaml)
 
     def test_save_images_includes_source_file(self):
         response = self.client.get(
@@ -144,6 +151,93 @@ class DatasetExportViewTests(TestCase):
 
         with self.assert_zip_response(response) as archive:
             self.assertIn('JPEGImages/sample.jpg', archive.namelist())
+
+    def test_yolo_export_uses_configured_train_valid_test_folders(self):
+        self.media.metadata = {'split': 'train'}
+        self.media.save(update_fields=['metadata'])
+        for filename, split in [('validation.jpg', 'val'), ('testing.jpg', 'test')]:
+            Media.objects.create(
+                dataset=self.dataset,
+                type='image',
+                file=SimpleUploadedFile(filename, f'{split}-bytes'.encode()),
+                original_filename=filename,
+                width=100,
+                height=80,
+                metadata={'split': split},
+            )
+        self.dataset.split_config = {'train': 70, 'val': 20, 'test': 10}
+        self.dataset.save(update_fields=['split_config'])
+
+        response = self.client.get(
+            self.url,
+            {'export_format': 'yolo', 'save_images': '1'},
+        )
+
+        with self.assert_zip_response(response) as archive:
+            members = archive.namelist()
+            self.assertIn('train/images/sample.jpg', members)
+            self.assertIn('train/labels/sample.txt', members)
+            self.assertIn('valid/images/validation.jpg', members)
+            self.assertIn('valid/labels/validation.txt', members)
+            self.assertIn('test/images/testing.jpg', members)
+            self.assertIn('test/labels/testing.txt', members)
+            data_yaml = archive.read('data.yaml').decode()
+            self.assertIn('train: train/images', data_yaml)
+            self.assertIn('val: valid/images', data_yaml)
+            self.assertIn('test: test/images', data_yaml)
+            self.assertIn('0: "Object"', data_yaml)
+
+    def test_yolo_export_uses_fixed_test_dataset(self):
+        self.media.metadata = {'split': 'train'}
+        self.media.save(update_fields=['metadata'])
+        Media.objects.create(
+            dataset=self.dataset,
+            type='image',
+            file=SimpleUploadedFile('validation.jpg', b'validation-bytes'),
+            original_filename='validation.jpg',
+            width=100,
+            height=80,
+            metadata={'split': 'val'},
+        )
+        test_dataset = Dataset.objects.create(
+            project=self.project,
+            name='Fixed test dataset',
+        )
+        Media.objects.create(
+            dataset=test_dataset,
+            type='image',
+            file=SimpleUploadedFile('fixed-test.jpg', b'fixed-test-bytes'),
+            original_filename='fixed-test.jpg',
+            width=100,
+            height=80,
+        )
+        Media.objects.create(
+            dataset=test_dataset,
+            type='image',
+            file=SimpleUploadedFile('augmented.jpg', b'augmented-bytes'),
+            original_filename='augmented.jpg',
+            width=100,
+            height=80,
+            metadata={'category': 'augmented'},
+        )
+        self.dataset.split_config = {
+            'train': 80,
+            'val': 20,
+            'test': 0,
+            'test_dataset_id': test_dataset.id,
+        }
+        self.dataset.save(update_fields=['split_config'])
+
+        response = self.client.get(
+            self.url,
+            {'export_format': 'yolo', 'save_images': '1'},
+        )
+
+        with self.assert_zip_response(response) as archive:
+            members = archive.namelist()
+            self.assertIn('test/images/fixed-test.jpg', members)
+            self.assertIn('test/labels/fixed-test.txt', members)
+            self.assertNotIn('test/images/augmented.jpg', members)
 
     def test_invalid_export_format_returns_400(self):
         response = self.client.get(

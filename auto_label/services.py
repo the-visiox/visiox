@@ -217,26 +217,53 @@ def request_predictions(payload):
     headers = {}
     if settings.INFERENCE_AGENT_TOKEN:
         headers['Authorization'] = f'Bearer {settings.INFERENCE_AGENT_TOKEN}'
-    try:
-        response = requests.post(
-            f'{inference_url}/v1/predict-dataset',
-            json=payload,
-            headers=headers,
-            timeout=120,
-        )
-    except requests.RequestException as exc:
+    # The unified inference-agent contract only accepts engine, dataset,
+    # output_type and confidence. ``model`` and uploaded-model checksums are
+    # retained in the internal payload for the local Ultralytics fallback, but
+    # must never be forwarded to the strict FastAPI/Pydantic schema.
+    remote_payload = {key: value for key, value in payload.items() if key != 'model'}
+    engine = remote_payload.get('engine')
+    if isinstance(engine, dict) and 'checksum' in engine:
+        remote_payload['engine'] = {key: value for key, value in engine.items() if key != 'checksum'}
+    retry_count = max(0, int(getattr(settings, 'AUTO_LABEL_INFERENCE_RETRIES', 2)))
+    retry_delay = max(0.0, float(getattr(settings, 'AUTO_LABEL_INFERENCE_RETRY_DELAY', 1)))
+    response = None
+    remote_error = None
+    for attempt in range(retry_count + 1):
+        try:
+            response = requests.post(
+                f'{inference_url}/v1/auto-label/predict',
+                json=remote_payload,
+                headers=headers,
+                timeout=120,
+            )
+        except requests.RequestException as exc:
+            remote_error = AutoLabelInferenceError(f'Inference server request failed: {exc}')
+        else:
+            if response.ok:
+                break
+            detail = response.text.strip() or response.reason
+            remote_error = AutoLabelInferenceError(
+                f'Inference agent returned HTTP {response.status_code}: {detail[:500]}'
+            )
+            if response.status_code < 500:
+                raise remote_error
+        if attempt < retry_count:
+            wait_seconds = retry_delay * (2 ** attempt)
+            logger.warning(
+                'Auto Label inference attempt %s/%s failed; retrying in %.1fs: %s',
+                attempt + 1,
+                retry_count + 1,
+                wait_seconds,
+                remote_error,
+            )
+            if wait_seconds:
+                time.sleep(wait_seconds)
+    if response is None or not response.ok:
         return _fallback_predictions(
             payload,
-            AutoLabelInferenceError(f'Inference server request failed: {exc}'),
+            remote_error or AutoLabelInferenceError('Inference server request failed.'),
         )
-    if not response.ok:
-        detail = response.text.strip() or response.reason
-        remote_error = AutoLabelInferenceError(
-            f'Inference agent returned HTTP {response.status_code}: {detail[:500]}'
-        )
-        if response.status_code >= 500:
-            return _fallback_predictions(payload, remote_error)
-        raise remote_error
     try:
         result = response.json()
     except ValueError as exc:

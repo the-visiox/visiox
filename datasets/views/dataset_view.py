@@ -677,6 +677,9 @@ def _validate_dataset_import_files(
     if import_format != 'images':
         raise ValueError('Only Images and YOLO26 imports are currently supported.')
 
+    if len(files) == 1 and (files[0].name or '').lower().endswith('.zip'):
+        return
+
     names = [posixpath.basename(getattr(file_obj, 'name', '') or '') for file_obj in files]
     if not all(names):
         raise ValueError('Every file must have a non-empty name.')
@@ -904,6 +907,110 @@ def _import_staged_media_files(job: DatasetImportJob) -> dict:
     return {'format': 'images', 'files': created}
 
 
+def _images_archive_name_map(image_keys: list[str]) -> dict[str, str]:
+    base_name_counts: dict[str, int] = {}
+    for image_key in image_keys:
+        base_name = posixpath.basename(image_key)
+        base_name_counts[base_name] = base_name_counts.get(base_name, 0) + 1
+
+    result = {
+        image_key: posixpath.basename(image_key)
+        for image_key in image_keys
+        if base_name_counts[posixpath.basename(image_key)] == 1
+    }
+    used_names = set(result.values())
+    for image_key in sorted(image_keys):
+        base_name = posixpath.basename(image_key)
+        if base_name_counts[base_name] == 1:
+            continue
+        stem, extension = posixpath.splitext(base_name)
+        sequence = 2
+        candidate = f'{stem}__{sequence}{extension}'
+        while candidate in used_names:
+            sequence += 1
+            candidate = f'{stem}__{sequence}{extension}'
+        result[image_key] = candidate
+        used_names.add(candidate)
+    return result
+
+
+def _import_images_archive_from_file(
+    dataset: Dataset,
+    archive_file,
+    archive_name: str,
+    user,
+    job: DatasetImportJob | None = None,
+) -> dict:
+    try:
+        archive = zipfile.ZipFile(archive_file)
+    except zipfile.BadZipFile as exc:
+        raise ValueError('The uploaded file is not a valid ZIP archive.') from exc
+
+    with archive:
+        members = _zip_file_members(archive)
+        image_keys = [
+            name
+            for name in members
+            if posixpath.splitext(name)[1].lower() in MEDIA_IMAGE_EXTENSIONS
+        ]
+        if not image_keys:
+            raise ValueError('The ZIP archive does not contain any supported image files.')
+
+        if job:
+            job.total = len(image_keys)
+            job.done = 0
+            job.save(update_fields=['total', 'done', 'updated_at'])
+
+        image_name_map = _images_archive_name_map(image_keys)
+        filenames = list(image_name_map.values())
+        clashes = _existing_media_names_in_dataset(dataset, filenames)
+        if clashes:
+            raise ValueError(_duplicate_names_error(set(clashes)))
+
+        dataset.project.owner
+
+        created = 0
+        batch_size = _dataset_import_batch_size()
+        for image_batch in _chunked(image_keys, batch_size):
+            media_batch = []
+            storage_entries = []
+            for image_key in image_batch:
+                image_name = image_name_map[image_key]
+                content = archive.read(image_key)
+                content_file = ContentFile(content, name=image_name)
+                width, height = _extract_image_dimensions(ContentFile(content))
+                media = Media(
+                    dataset=dataset,
+                    type='image',
+                    original_filename=image_name,
+                    width=width,
+                    height=height,
+                    file_size=len(content),
+                    metadata={
+                        'import_format': 'images_zip',
+                        'source_archive': archive_name,
+                        'source_archive_path': image_key,
+                        'import_job_id': job.id if job else None,
+                    },
+                )
+                media_batch.append(media)
+                storage_entries.append((media, image_name, content_file))
+
+            _save_media_batch(storage_entries)
+            try:
+                Media.objects.bulk_create(media_batch)
+            except Exception:
+                _delete_unsaved_media_files(media_batch)
+                raise
+
+            created += len(media_batch)
+            if job:
+                job.done = created
+                job.save(update_fields=['done', 'updated_at'])
+
+    return {'format': 'images', 'files': created}
+
+
 def _import_yolo26_archive_from_file(
     dataset: Dataset,
     archive_file,
@@ -922,34 +1029,57 @@ def _import_yolo26_archive_from_file(
             (name for name in members if posixpath.basename(name).lower() in ('data.yaml', 'data.yml')),
             None,
         )
-        if not data_yaml_key:
-            raise ValueError('YOLO26 ZIP must include data.yaml.')
+        classes_txt_key = next(
+            (name for name in members if posixpath.basename(name).lower() == 'classes.txt'),
+            None,
+        )
 
-        try:
-            data_yaml = archive.read(data_yaml_key).decode('utf-8')
-        except UnicodeDecodeError as exc:
-            raise ValueError('data.yaml must be UTF-8 encoded.') from exc
+        class_names = []
+        if data_yaml_key:
+            try:
+                data_yaml = archive.read(data_yaml_key).decode('utf-8')
+                class_names = _parse_yolo_names(data_yaml)
+            except Exception:
+                pass
 
-        class_names = _parse_yolo_names(data_yaml)
+        if not class_names and classes_txt_key:
+            try:
+                classes_txt = archive.read(classes_txt_key).decode('utf-8', errors='ignore')
+                class_names = [
+                    line.strip()
+                    for line in classes_txt.splitlines()
+                    if line.strip() and not line.strip().startswith('#')
+                ]
+            except Exception:
+                pass
+
         if not class_names:
-            raise ValueError('data.yaml must define at least one class in names.')
+            raw_images = [
+                name for name in members
+                if posixpath.splitext(name)[1].lower() in MEDIA_IMAGE_EXTENSIONS
+            ]
+            if raw_images:
+                raise ValueError(
+                    'This ZIP contains images but no data.yaml or classes.txt. '
+                    'To import images without YOLO annotations, please select the "Images" upload option.'
+                )
+            raise ValueError('YOLO26 ZIP must include data.yaml or classes.txt with class names.')
 
         image_keys = [
             name
             for name in members
-            if '/images/' in f'/{name}'
+            if ('/images/' in f'/{name}' or posixpath.dirname(name) in ('', 'images') or posixpath.basename(posixpath.dirname(name)) == 'images')
             and posixpath.splitext(name)[1].lower() in YOLO_IMAGE_EXTENSIONS
         ]
         if not image_keys:
-            raise ValueError('YOLO26 ZIP must include images under train/valid/test images folders.')
+            raise ValueError('YOLO26 ZIP must include images under an images/ or split folder.')
 
         image_split_map = {name: _yolo_split_name(name) for name in image_keys}
         missing_split = [name for name, split in image_split_map.items() if split is None]
+        # For un-split datasets (e.g. flat images/ and labels/), default all un-split images to 'train'
         if missing_split:
-            raise ValueError('Every YOLO26 image must be under train/images, valid/images, val/images, or test/images.')
-        available_splits = set(image_split_map.values())
-        if 'train' not in available_splits or 'val' not in available_splits:
-            raise ValueError('YOLO26 ZIP must include both train and valid/val image splits.')
+            for name in missing_split:
+                image_split_map[name] = 'train'
 
         if job:
             job.total = len(image_keys)
@@ -1186,7 +1316,18 @@ def run_dataset_import_job(job_id: int) -> None:
             if video_extraction.get('enabled'):
                 summary = run_video_extraction_job(job, video_extraction)
             else:
-                summary = _import_staged_media_files(job)
+                staged = (job.staged_files or [])[0] if len(job.staged_files or []) == 1 else None
+                if staged and (staged.get('name') or '').lower().endswith('.zip') and staged.get('key'):
+                    with default_storage.open(staged['key'], 'rb') as archive_file:
+                        summary = _import_images_archive_from_file(
+                            job.dataset,
+                            archive_file,
+                            staged.get('name') or 'images.zip',
+                            job.created_by,
+                            job,
+                        )
+                else:
+                    summary = _import_staged_media_files(job)
         elif job.format == 'yolo26':
             staged = (job.staged_files or [])[0] if job.staged_files else None
             if not staged or not staged.get('key'):

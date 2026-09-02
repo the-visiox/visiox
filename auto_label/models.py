@@ -66,7 +66,14 @@ class AutoLabelDatasetJob(models.Model):
     ]
 
     dataset = models.ForeignKey('datasets.Dataset', on_delete=models.CASCADE, related_name='auto_label_jobs')
-    model = models.ForeignKey(AutoLabelModel, on_delete=models.CASCADE, related_name='dataset_jobs')
+    model = models.ForeignKey(
+        AutoLabelModel,
+        on_delete=models.CASCADE,
+        related_name='dataset_jobs',
+        null=True,
+        blank=True,
+    )
+    source = models.JSONField(default=dict, blank=True)
     output_type = models.CharField(max_length=20, default='bbox')
     confidence = models.FloatField(default=0.45)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='queued')

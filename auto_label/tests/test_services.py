@@ -54,6 +54,11 @@ class AutoLabelGeometryTests(SimpleTestCase):
         provider = provider_by_id('yolo_world')
         self.assertEqual(provider['capabilities'], ['bbox'])
 
+    def test_sam3_declares_polygon_and_supported_model(self):
+        provider = provider_by_id('sam3')
+        self.assertEqual(provider['capabilities'], ['polygon'])
+        self.assertEqual(provider['models'], ['facebook/sam3'])
+
 
 class AutoLabelUploadContractTests(SimpleTestCase):
     def test_storage_is_configured_as_storage_instance(self):
@@ -84,6 +89,74 @@ class AutoLabelUploadContractTests(SimpleTestCase):
 
 
 class AutoLabelInferenceFallbackTests(SimpleTestCase):
+    @override_settings(
+        INFERENCE_API_URL='http://inference.invalid',
+        INFERENCE_AGENT_TOKEN='',
+        AUTO_LABEL_LOCAL_FALLBACK=False,
+        AUTO_LABEL_INFERENCE_RETRIES=2,
+        AUTO_LABEL_INFERENCE_RETRY_DELAY=0,
+    )
+    @patch('auto_label.services.requests.post')
+    def test_transient_502_is_retried(self, post):
+        failed = Mock(ok=False, status_code=502, text='temporary failure', reason='Bad Gateway')
+        succeeded = Mock(ok=True)
+        succeeded.json.return_value = {'predictions': [], 'summary': {}}
+        post.side_effect = [failed, succeeded]
+
+        result = request_predictions({'engine': {}, 'dataset': {}})
+
+        self.assertEqual(result['predictions'], [])
+        self.assertEqual(post.call_count, 2)
+
+    @override_settings(
+        INFERENCE_API_URL='http://inference.invalid',
+        INFERENCE_AGENT_TOKEN='secret',
+        AUTO_LABEL_LOCAL_FALLBACK=False,
+    )
+    @patch('auto_label.services.requests.post')
+    def test_uses_unified_auto_label_endpoint(self, post):
+        post.return_value.ok = True
+        post.return_value.json.return_value = {'predictions': []}
+        payload = {'engine': {'provider': 'sam3'}, 'dataset': {}}
+
+        request_predictions(payload)
+
+        post.assert_called_once_with(
+            'http://inference.invalid/v1/auto-label/predict',
+            json=payload,
+            headers={'Authorization': 'Bearer secret'},
+            timeout=120,
+        )
+
+    @override_settings(
+        INFERENCE_API_URL='http://inference.invalid',
+        INFERENCE_AGENT_TOKEN='secret',
+        AUTO_LABEL_LOCAL_FALLBACK=False,
+    )
+    @patch('auto_label.services.requests.post')
+    def test_uploaded_model_omits_legacy_fields_from_remote_contract(self, post):
+        post.return_value.ok = True
+        post.return_value.json.return_value = {'predictions': []}
+        payload = {
+            'engine': {
+                'provider': 'uploaded_yolo',
+                'model_id': 29,
+                'name': 'custom-yolo',
+                'checksum': 'abc123',
+            },
+            'model': {'registry_id': 29, 'checksum': 'abc123'},
+            'dataset': {'id': 1, 'media_ids': [2]},
+            'output_type': 'bbox',
+            'confidence': 0.45,
+        }
+
+        request_predictions(payload)
+
+        sent_payload = post.call_args.kwargs['json']
+        self.assertNotIn('model', sent_payload)
+        self.assertNotIn('checksum', sent_payload['engine'])
+        self.assertEqual(sent_payload['engine']['model_id'], 29)
+
     @override_settings(
         INFERENCE_API_URL='http://inference.invalid',
         INFERENCE_AGENT_TOKEN='',

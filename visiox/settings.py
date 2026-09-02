@@ -166,6 +166,7 @@ REST_FRAMEWORK = {
         'anon': '60/min',
         'user': '300/min',
         'login': '5/min',
+
         'register': '3/min',
         'token_refresh': '10/min',
     },
@@ -179,6 +180,20 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+AUTH_USER_MODEL = 'core.UserModel'
+
+# ── Email ──────────────────────────────────────────────────────────────────────
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True') == 'True'
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'VisioX <noreply@visiox.ai>')
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'Visiox API',
@@ -202,13 +217,13 @@ SPECTACULAR_SETTINGS = {
 # When True, long jobs (augmentation) are dispatched to Celery workers; otherwise
 # they run in a background thread (fine for the dev server). Turn on in production.
 USE_CELERY = os.getenv('USE_CELERY', 'False') == 'True'
-# Production follows USE_CELERY by default. Override only for local development
-# or while deploying the dedicated datasets worker.
 AUTO_LABEL_USE_CELERY = os.getenv(
     'AUTO_LABEL_USE_CELERY',
     str(USE_CELERY),
 ).lower() in ('1', 'true', 'yes')
-AUTO_LABEL_DATASET_BATCH_SIZE = max(1, int(os.getenv('AUTO_LABEL_DATASET_BATCH_SIZE', '32')))
+AUTO_LABEL_DATASET_BATCH_SIZE = max(1, int(os.getenv('AUTO_LABEL_DATASET_BATCH_SIZE', '8')))
+AUTO_LABEL_INFERENCE_RETRIES = max(0, int(os.getenv('AUTO_LABEL_INFERENCE_RETRIES', '2')))
+AUTO_LABEL_INFERENCE_RETRY_DELAY = max(0.0, float(os.getenv('AUTO_LABEL_INFERENCE_RETRY_DELAY', '1')))
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
@@ -216,14 +231,16 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
-# Dataset imports use a small thread pool only for storage I/O. ORM writes stay
-# on the Celery task thread. Keep this bounded to avoid overwhelming MinIO.
+# Dataset imports: in local dev, run in background thread with DATASET_IMPORT_USE_CELERY=False
+DATASET_IMPORT_USE_CELERY = os.getenv(
+    'DATASET_IMPORT_USE_CELERY',
+    'False',
+).lower() in ('1', 'true', 'yes')
 DATASET_IMPORT_STORAGE_WORKERS = int(os.getenv('DATASET_IMPORT_STORAGE_WORKERS', '4'))
 DATASET_IMPORT_BATCH_SIZE = int(os.getenv('DATASET_IMPORT_BATCH_SIZE', '16'))
 DATASET_DIRECT_UPLOAD_EXPIRES = int(os.getenv('DATASET_DIRECT_UPLOAD_EXPIRES', '3600'))
 
-# GPU training agent. The callback URL must be reachable from the GPU host
-# (use the API container/LAN address, never localhost in production).
+# GPU training agent
 TRAINING_AGENT_URL = os.getenv('TRAINING_AGENT_URL', 'http://localhost:8002').rstrip('/')
 TRAINING_AGENT_TOKEN = os.getenv('TRAINING_AGENT_TOKEN', '')
 TRAINING_CALLBACK_TOKEN = os.getenv('TRAINING_CALLBACK_TOKEN', '')
@@ -241,8 +258,6 @@ INFERENCE_API_URL = os.getenv('INFERENCE_API_URL', '').rstrip('/')
 INFERENCE_AGENT_TOKEN = os.getenv('INFERENCE_AGENT_TOKEN') or TRAINING_AGENT_TOKEN
 AUTO_LABEL_LOCAL_FALLBACK = os.getenv('AUTO_LABEL_LOCAL_FALLBACK', 'False').lower() in ('1', 'true', 'yes')
 AUTO_LABEL_LOCAL_DEVICE = os.getenv('AUTO_LABEL_LOCAL_DEVICE', '')
-
-# Storage — local by default, switch to MinIO via env
 USE_MINIO = os.getenv('USE_MINIO', 'False') == 'True'
 
 if USE_MINIO:

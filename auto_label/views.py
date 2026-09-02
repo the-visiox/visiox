@@ -57,7 +57,8 @@ def dataset_job_payload(job):
         'id': job.id,
         'dataset': job.dataset_id,
         'model': job.model_id,
-        'model_name': job.model.name,
+        'model_name': job.model.name if job.model else str(job.source.get('model') or ''),
+        'source': job.source,
         'output_type': job.output_type,
         'confidence': job.confidence,
         'status': job.status,
@@ -70,6 +71,89 @@ def dataset_job_payload(job):
         'created_at': job.created_at,
         'updated_at': job.updated_at,
     }
+
+
+def resolve_auto_label_source(request, dataset, source, output_type):
+    kind = source.get('kind')
+    if kind == 'uploaded_model':
+        try:
+            model_id = int(source.get('model_id'))
+        except (TypeError, ValueError) as exc:
+            raise ValueError('source.model_id is required.') from exc
+        model = AutoLabelModel.objects.filter(
+            project_access_q(request.user, 'project__'),
+            project=dataset.project,
+            pk=model_id,
+        ).first()
+        if model is None:
+            raise LookupError('Auto Label model not found.')
+        if model.status != 'ready':
+            raise RuntimeError('The selected Auto Label model is not ready.')
+        if output_type not in model.capabilities:
+            raise RuntimeError(f'The selected model does not support {output_type}.')
+        artifact_format = Path(model.model_file.name).suffix.lower().lstrip('.') or 'pt'
+        engine = {
+            'provider': 'uploaded_yolo',
+            'model_id': model.id,
+            'name': model.name,
+            'version': model.version,
+            'format': artifact_format,
+            'task_type': model.task_type,
+            'storage_key': model.model_file.name,
+        }
+        compatibility_model = {
+            'registry_id': model.id,
+            'name': model.name,
+            'version': model.version,
+            'format': artifact_format,
+            'storage_key': model.model_file.name,
+        }
+        return engine, compatibility_model, {
+            'kind': kind, 'model_id': model.id, 'provider': 'uploaded_yolo', 'name': model.name,
+        }, model
+
+    if kind == 'provider':
+        provider_id = str(source.get('provider') or '')
+        provider = provider_by_id(provider_id)
+        if provider is None:
+            raise LookupError('Auto Label provider not found.')
+        if output_type not in provider['capabilities']:
+            raise RuntimeError(f'{provider["display_name"]} does not support {output_type}.')
+        model_name = str(source.get('model') or '')
+        if model_name not in provider['models']:
+            raise ValueError('A valid provider model is required.')
+        raw_prompts = source.get('prompts')
+        if not isinstance(raw_prompts, list):
+            raise ValueError('source.prompts must be a list of class names.')
+        max_prompts = 20 if provider_id == 'sam3' else 100
+        prompts = []
+        seen = set()
+        for item in raw_prompts:
+            prompt = str(item).strip()
+            key = prompt.casefold()
+            if not prompt or key in seen:
+                continue
+            if len(prompt) > 200:
+                raise ValueError('Each prompt must contain at most 200 characters.')
+            seen.add(key)
+            prompts.append(prompt)
+        if not prompts:
+            raise ValueError(f'At least one {provider["display_name"]} prompt is required.')
+        if len(prompts) > max_prompts:
+            raise ValueError(f'{provider["display_name"]} accepts at most {max_prompts} prompts.')
+        normalized_source = {
+            'kind': kind,
+            'provider': provider_id,
+            'model': model_name,
+            'prompts': prompts,
+        }
+        return {
+            'provider': provider_id,
+            'model': model_name,
+            'prompts': prompts,
+        }, None, normalized_source, None
+
+    raise ValueError('source.kind must be uploaded_model or provider.')
 
 
 def propagation_job_payload(job):
@@ -105,24 +189,26 @@ class DatasetAutoLabelView(APIView):
         ).select_related('project').first()
         if dataset is None:
             return Response({'error': 'Dataset not found.'}, status=status.HTTP_404_NOT_FOUND)
+        source = request.data.get('source')
+        if not isinstance(source, dict):
+            try:
+                source = {'kind': 'uploaded_model', 'model_id': int(request.data.get('model_id'))}
+            except (TypeError, ValueError):
+                source = None
+        output_type = request.data.get('output_type', 'bbox')
+        if not isinstance(source, dict) or output_type not in ('bbox', 'polygon'):
+            return Response({'error': 'A valid source and output_type are required.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            model_id = int(request.data.get('model_id'))
             confidence = inference_confidence(request.data.get('confidence'))
+            _, _, normalized_source, model = resolve_auto_label_source(
+                request, dataset, source, output_type,
+            )
         except (TypeError, ValueError) as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        output_type = request.data.get('output_type', 'bbox')
-        model = AutoLabelModel.objects.filter(
-            project=dataset.project,
-            pk=model_id,
-            status='ready',
-        ).first()
-        if model is None:
-            return Response({'error': 'Ready Auto Label model not found.'}, status=status.HTTP_404_NOT_FOUND)
-        if output_type not in model.capabilities:
-            return Response(
-                {'error': f'The selected model does not support {output_type}.'},
-                status=status.HTTP_409_CONFLICT,
-            )
+        except LookupError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        except RuntimeError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_409_CONFLICT)
         active = AutoLabelDatasetJob.objects.filter(
             dataset=dataset,
             status__in=('queued', 'running'),
@@ -136,6 +222,7 @@ class DatasetAutoLabelView(APIView):
             job = AutoLabelDatasetJob.objects.create(
                 dataset=dataset,
                 model=model,
+                source=normalized_source,
                 output_type=output_type,
                 confidence=confidence,
                 total=total,
@@ -269,8 +356,42 @@ class FrameAutoLabelPredictView(APIView):
         if media is None:
             return Response({'error': 'Frame not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        source = request.data.get('source')
         output_type = request.data.get('output_type', 'bbox')
+        selected_labels = None
+        prompt_index_to_label = None
+        if request.data.get('provider') == 'sam3':
+            label_ids = request.data.get('label_ids')
+            if (
+                not isinstance(label_ids, list)
+                or not 1 <= len(label_ids) <= 20
+                or any(not isinstance(label_id, int) or isinstance(label_id, bool) for label_id in label_ids)
+                or len(set(label_ids)) != len(label_ids)
+            ):
+                return Response(
+                    {'error': 'label_ids must contain 1 to 20 unique integer label IDs.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            labels_by_id = {
+                item.id: item
+                for item in Class.objects.filter(project=dataset.project, id__in=label_ids)
+            }
+            if len(labels_by_id) != len(label_ids):
+                return Response(
+                    {'error': 'One or more labels do not belong to this dataset project.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            selected_labels = [labels_by_id[label_id] for label_id in label_ids]
+            prompt_index_to_label = dict(enumerate(selected_labels))
+            model_name = str(request.data.get('model') or 'facebook/sam3')
+            source = {
+                'kind': 'provider',
+                'provider': 'sam3',
+                'model': model_name,
+                'prompts': [item.name for item in selected_labels],
+            }
+        else:
+            source = request.data.get('source')
+
         if not isinstance(source, dict) or output_type not in ('bbox', 'polygon'):
             return Response(
                 {'error': 'A valid source and output_type are required.'},
@@ -278,7 +399,9 @@ class FrameAutoLabelPredictView(APIView):
             )
         try:
             confidence = inference_confidence(request.data.get('confidence'))
-            engine, compatibility_model, source_response = self._resolve_source(request, dataset, source, output_type)
+            engine, compatibility_model, source_response, _ = resolve_auto_label_source(
+                request, dataset, source, output_type,
+            )
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except LookupError as exc:
@@ -297,6 +420,16 @@ class FrameAutoLabelPredictView(APIView):
         try:
             result = request_predictions(payload)
         except AutoLabelInferenceError as exc:
+            if engine.get('provider') == 'sam3':
+                return Response({
+                    'error': (
+                        'SAM 3 is unavailable on the inference agent. The request and media are valid, '
+                        'but the agent could not run the model. Check the inference-agent logs, '
+                        'SAM3_CHECKPOINT, SAM3_REPOSITORY_PATH, dependencies, and CUDA memory.'
+                    ),
+                    'code': 'sam3_inference_unavailable',
+                    'upstream_error': str(exc),
+                }, status=status.HTTP_502_BAD_GATEWAY)
             return Response({'error': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         finally:
             if compatibility_model:
@@ -319,7 +452,15 @@ class FrameAutoLabelPredictView(APIView):
             label = str(prediction.get('label') or '').strip()
             if not label:
                 continue
-            class_obj = class_by_name.get(label.casefold())
+            if prompt_index_to_label is not None:
+                prompt_index = prediction.get('label_id')
+                if not isinstance(prompt_index, int) or isinstance(prompt_index, bool):
+                    continue
+                class_obj = prompt_index_to_label.get(prompt_index)
+                if class_obj is None or label.casefold() != class_obj.name.strip().casefold():
+                    continue
+            else:
+                class_obj = class_by_name.get(label.casefold())
             if class_obj is None and create_missing:
                 with transaction.atomic():
                     class_obj, created = Class.objects.get_or_create(
@@ -344,6 +485,7 @@ class FrameAutoLabelPredictView(APIView):
             predictions.append({
                 'type': shape_type,
                 'class_label': class_obj.id,
+                'label_id': class_obj.id,
                 'label': class_obj.name,
                 'confidence': prediction.get('confidence'),
                 'data': data,
@@ -359,69 +501,3 @@ class FrameAutoLabelPredictView(APIView):
             'unmapped_labels': sorted(unmapped_labels),
             'summary': result.get('summary') or {},
         })
-
-    @staticmethod
-    def _resolve_source(request, dataset, source, output_type):
-        kind = source.get('kind')
-        if kind == 'uploaded_model':
-            try:
-                model_id = int(source.get('model_id'))
-            except (TypeError, ValueError) as exc:
-                raise ValueError('source.model_id is required.') from exc
-            model = AutoLabelModel.objects.filter(
-                project_access_q(request.user, 'project__'),
-                project=dataset.project,
-                pk=model_id,
-            ).first()
-            if model is None:
-                raise LookupError('Auto Label model not found.')
-            if model.status != 'ready':
-                raise RuntimeError('The selected Auto Label model is not ready.')
-            if output_type not in model.capabilities:
-                raise RuntimeError(f'The selected model does not support {output_type}.')
-            artifact_format = Path(model.model_file.name).suffix.lower().lstrip('.') or 'pt'
-            engine = {
-                'provider': 'uploaded_yolo',
-                'model_id': model.id,
-                'name': model.name,
-                'version': model.version,
-                'format': artifact_format,
-                'task_type': model.task_type,
-                'storage_key': model.model_file.name,
-            }
-            compatibility_model = {
-                'registry_id': model.id,
-                'name': model.name,
-                'version': model.version,
-                'format': artifact_format,
-                'storage_key': model.model_file.name,
-            }
-            return engine, compatibility_model, {
-                'kind': kind, 'model_id': model.id, 'provider': 'uploaded_yolo', 'name': model.name,
-            }
-
-        if kind == 'provider':
-            provider_id = str(source.get('provider') or '')
-            provider = provider_by_id(provider_id)
-            if provider is None:
-                raise LookupError('Auto Label provider not found.')
-            if output_type not in provider['capabilities']:
-                raise RuntimeError(f'{provider["display_name"]} does not support {output_type}.')
-            model_name = str(source.get('model') or '')
-            if model_name not in provider['models']:
-                raise ValueError('A valid provider model is required.')
-            prompts = source.get('prompts')
-            if not isinstance(prompts, list):
-                raise ValueError('source.prompts must be a list of class names.')
-            prompts = list(dict.fromkeys(str(item).strip() for item in prompts if str(item).strip()))
-            if not prompts:
-                raise ValueError('At least one YOLO World prompt is required.')
-            return {
-                'provider': provider_id,
-                'model': model_name,
-                'prompts': prompts[:100],
-            }, None, {
-                'kind': kind, 'provider': provider_id, 'model': model_name,
-            }
-
-        raise ValueError('source.kind must be uploaded_model or provider.')

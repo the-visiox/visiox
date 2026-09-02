@@ -15,6 +15,8 @@ from datasets.views.dataset_view import (
     _dataset_import_storage_workers,
     _direct_upload_url,
     _duplicate_names_error,
+    _images_archive_name_map,
+    _validate_dataset_import_files,
     _yolo_image_name_map,
     _read_yolo_label_rows,
     _save_media_batch,
@@ -232,6 +234,80 @@ class DatasetImportStorageTests(SimpleTestCase):
     def test_unambiguous_one_based_yolo_class_ids_are_normalized(self):
         self.assertEqual(_yolo_class_index_offset({1, 3}, 3), 1)
 
+    @override_settings(DATASET_IMPORT_STORAGE_WORKERS=3)
+    def test_storage_batch_runs_with_bounded_concurrency(self):
+        tracker = {'active': 0, 'maximum': 0, 'lock': threading.Lock()}
+        media_items = [_FakeMedia(tracker) for _ in range(6)]
+
+        _save_media_batch([
+            (media, f'image-{index}.jpg', object())
+            for index, media in enumerate(media_items)
+        ])
+
+        self.assertGreater(tracker['maximum'], 1)
+        self.assertLessEqual(tracker['maximum'], 3)
+        self.assertTrue(all(media.file.name for media in media_items))
+
+    @override_settings(DATASET_IMPORT_STORAGE_WORKERS=2)
+    def test_storage_batch_cleans_up_completed_files_after_failure(self):
+        tracker = {'active': 0, 'maximum': 0, 'lock': threading.Lock()}
+        successful = _FakeMedia(tracker)
+        failing = _FakeMedia(tracker, fail=True)
+
+        with self.assertRaisesRegex(OSError, 'storage failed'):
+            _save_media_batch([
+                (successful, 'success.jpg', object()),
+                (failing, 'failure.jpg', object()),
+            ])
+
+        successful.file.storage.delete.assert_called_once_with('uploaded/success.jpg')
+
+    @override_settings(DATASET_IMPORT_STORAGE_WORKERS=99, DATASET_IMPORT_BATCH_SIZE=24)
+    def test_import_limits_are_sanitized(self):
+        self.assertEqual(_dataset_import_storage_workers(), 16)
+        self.assertEqual(_dataset_import_batch_size(), 24)
+
+    def test_standard_yolo_class_ids_keep_zero_based_index(self):
+        self.assertEqual(_yolo_class_index_offset({0, 2}, 3), 0)
+
+    def test_duplicate_yolo_basenames_are_prefixed_with_split(self):
+        image_keys = [
+            'dataset/test/images/camera.jpg',
+            'dataset/train/images/camera.jpg',
+            'dataset/train/images/unique.jpg',
+        ]
+        split_map = {image_key: _split for image_key, _split in zip(image_keys, ['test', 'train', 'train'])}
+
+        names = _yolo_image_name_map(image_keys, split_map)
+
+        self.assertEqual(names[image_keys[0]], 'test__camera.jpg')
+        self.assertEqual(names[image_keys[1]], 'train__camera.jpg')
+        self.assertEqual(names[image_keys[2]], 'unique.jpg')
+        self.assertEqual(len(set(names.values())), len(image_keys))
+
+    def test_yolo_generated_name_does_not_collide_with_real_basename(self):
+        image_keys = [
+            'dataset/test/images/camera.jpg',
+            'dataset/train/images/camera.jpg',
+            'dataset/train/images/test__camera.jpg',
+        ]
+        split_map = {image_key: _split for image_key, _split in zip(image_keys, ['test', 'train', 'train'])}
+
+        names = _yolo_image_name_map(image_keys, split_map)
+
+        self.assertEqual(names[image_keys[0]], 'test__camera__2.jpg')
+        self.assertEqual(len(set(names.values())), len(image_keys))
+
+    def test_yolo_class_colors_are_distinct_and_repeat_safely(self):
+        colors = [_yolo_class_color(index) for index in range(4)]
+
+        self.assertEqual(len(set(colors)), 4)
+        self.assertTrue(all(color != '#000000' for color in colors))
+        self.assertEqual(_yolo_class_color(16), colors[0])
+
+    def test_unambiguous_one_based_yolo_class_ids_are_normalized(self):
+        self.assertEqual(_yolo_class_index_offset({1, 3}, 3), 1)
+
     def test_invalid_yolo_class_ids_are_rejected(self):
         with self.assertRaisesRegex(ValueError, r'0\.\.2'):
             _yolo_class_index_offset({0, 3}, 3)
@@ -259,3 +335,22 @@ class DatasetImportStorageTests(SimpleTestCase):
         self.assertIn('image-00.jpg', message)
         self.assertIn('and 10 more', message)
         self.assertNotIn('image-19.jpg', message)
+
+    def test_images_archive_name_map_preserves_unique_names(self):
+        keys = ['folder1/cat.jpg', 'folder2/dog.png', 'folder3/bird.webp']
+        names = _images_archive_name_map(keys)
+        self.assertEqual(names['folder1/cat.jpg'], 'cat.jpg')
+        self.assertEqual(names['folder2/dog.png'], 'dog.png')
+        self.assertEqual(names['folder3/bird.webp'], 'bird.webp')
+
+    def test_images_archive_name_map_deduplicates_conflicting_basenames(self):
+        keys = ['train/cat.jpg', 'valid/cat.jpg', 'other/cat.jpg']
+        names = _images_archive_name_map(keys)
+        self.assertEqual(len(set(names.values())), 3)
+        self.assertTrue(all(name.endswith('.jpg') for name in names.values()))
+
+    def test_images_format_accepts_single_zip_archive(self):
+        dataset = Mock()
+        file_obj = SimpleUploadedFile('raw_images.zip', b'fake-zip-data', content_type='application/zip')
+        # Should not raise
+        _validate_dataset_import_files(dataset, 'images', [file_obj])
