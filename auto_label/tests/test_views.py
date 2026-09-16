@@ -130,3 +130,41 @@ class FrameSam3PredictTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         request_predictions.assert_not_called()
+
+    @patch('auto_label.views.request_predictions')
+    def test_accepts_nested_source_payload_for_sam3(self, request_predictions):
+        request_predictions.return_value = {
+            'predictions': [{
+                'media_id': self.media.id,
+                'type': 'polygon',
+                'label': 'cable',
+                'label_id': 1,
+                'confidence': 0.91,
+                'normalized': False,
+                'polygon': [10, 10, 80, 10, 80, 60],
+            }],
+            'summary': {},
+        }
+
+        response = self.client.post(
+            f'/api/v1/datasets/{self.dataset.id}/frames/0/predict/',
+            {
+                'source': {
+                    'type': 'provider',
+                    'provider_id': 'sam3',
+                    'model_name': 'facebook/sam3',
+                    'label_ids': [self.adapter.id, self.cable.id],
+                },
+                'output_type': 'polygon',
+                'confidence': 0.35,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['predictions'][0]['label_id'], self.cable.id)
+        self.assertEqual(
+            request_predictions.call_args.args[0]['engine']['prompts'],
+            ['adapter', 'cable'],
+        )
+

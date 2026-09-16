@@ -478,21 +478,21 @@ def _parse_yolo_names(data_yaml: str) -> list[str]:
             value = line.split(':', 1)[1].strip()
             if value.startswith('[') and value.endswith(']'):
                 return [
-                    item.strip().strip('"\'')
+                    item.strip().strip('"\'').lower()
                     for item in value[1:-1].split(',')
                     if item.strip().strip('"\'')
                 ]
             if value:
-                return [value.strip('"\'')]
+                return [value.strip('"\'').lower()]
             in_names_block = True
             continue
         if in_names_block:
             if line.startswith('- '):
-                names.append(line[2:].strip().strip('"\''))
+                names.append(line[2:].strip().strip('"\'').lower())
                 continue
             if ':' in line:
                 _, value = line.split(':', 1)
-                value = value.strip().strip('"\'')
+                value = value.strip().strip('"\'').lower()
                 if value:
                     names.append(value)
                 continue
@@ -1046,7 +1046,7 @@ def _import_yolo26_archive_from_file(
             try:
                 classes_txt = archive.read(classes_txt_key).decode('utf-8', errors='ignore')
                 class_names = [
-                    line.strip()
+                    line.strip().lower()
                     for line in classes_txt.splitlines()
                     if line.strip() and not line.strip().startswith('#')
                 ]
@@ -1110,7 +1110,8 @@ def _import_yolo26_archive_from_file(
         }
         with transaction.atomic():
             classes = []
-            for class_index, class_name in enumerate(class_names):
+            for class_index, raw_name in enumerate(class_names):
+                class_name = str(raw_name).strip().lower()
                 class_color = _yolo_class_color(class_index)
                 class_obj, created = Class.objects.get_or_create(
                     project=dataset.project,

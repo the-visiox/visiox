@@ -30,6 +30,8 @@ class Class(models.Model):
         ]
 
     def save(self, *args, **kwargs):
+        if self.name:
+            self.name = self.name.strip().lower()
         if self._state.adding and self.index is None and self.project_id:
             from projects.models import Project
 

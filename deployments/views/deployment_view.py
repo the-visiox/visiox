@@ -307,7 +307,7 @@ class ModelRegistryViewSet(viewsets.ModelViewSet):
             if class_obj is None:
                 class_obj, _ = Class.objects.get_or_create(
                     project=dataset.project,
-                    name=label,
+                    name=label.lower(),
                     defaults={'color': class_color_for_index(len(class_by_name))},
                 )
                 class_by_name[label.casefold()] = class_obj

@@ -74,10 +74,10 @@ def dataset_job_payload(job):
 
 
 def resolve_auto_label_source(request, dataset, source, output_type):
-    kind = source.get('kind')
-    if kind == 'uploaded_model':
+    kind = source.get('kind') or source.get('type')
+    if kind in ('uploaded_model', 'model'):
         try:
-            model_id = int(source.get('model_id'))
+            model_id = int(source.get('model_id') or source.get('id'))
         except (TypeError, ValueError) as exc:
             raise ValueError('source.model_id is required.') from exc
         model = AutoLabelModel.objects.filter(
@@ -109,17 +109,17 @@ def resolve_auto_label_source(request, dataset, source, output_type):
             'storage_key': model.model_file.name,
         }
         return engine, compatibility_model, {
-            'kind': kind, 'model_id': model.id, 'provider': 'uploaded_yolo', 'name': model.name,
+            'kind': 'uploaded_model', 'model_id': model.id, 'provider': 'uploaded_yolo', 'name': model.name,
         }, model
 
     if kind == 'provider':
-        provider_id = str(source.get('provider') or '')
+        provider_id = str(source.get('provider') or source.get('provider_id') or '')
         provider = provider_by_id(provider_id)
         if provider is None:
             raise LookupError('Auto Label provider not found.')
         if output_type not in provider['capabilities']:
             raise RuntimeError(f'{provider["display_name"]} does not support {output_type}.')
-        model_name = str(source.get('model') or '')
+        model_name = str(source.get('model') or source.get('model_name') or '')
         if model_name not in provider['models']:
             raise ValueError('A valid provider model is required.')
         raw_prompts = source.get('prompts')
@@ -142,7 +142,7 @@ def resolve_auto_label_source(request, dataset, source, output_type):
         if len(prompts) > max_prompts:
             raise ValueError(f'{provider["display_name"]} accepts at most {max_prompts} prompts.')
         normalized_source = {
-            'kind': kind,
+            'kind': 'provider',
             'provider': provider_id,
             'model': model_name,
             'prompts': prompts,
@@ -359,8 +359,16 @@ class FrameAutoLabelPredictView(APIView):
         output_type = request.data.get('output_type', 'bbox')
         selected_labels = None
         prompt_index_to_label = None
-        if request.data.get('provider') == 'sam3':
+        source_data = request.data.get('source') if isinstance(request.data.get('source'), dict) else {}
+        provider_name = (
+            request.data.get('provider')
+            or source_data.get('provider')
+            or source_data.get('provider_id')
+        )
+        if provider_name == 'sam3':
             label_ids = request.data.get('label_ids')
+            if label_ids is None and source_data:
+                label_ids = source_data.get('label_ids')
             if (
                 not isinstance(label_ids, list)
                 or not 1 <= len(label_ids) <= 20
@@ -382,7 +390,12 @@ class FrameAutoLabelPredictView(APIView):
                 )
             selected_labels = [labels_by_id[label_id] for label_id in label_ids]
             prompt_index_to_label = dict(enumerate(selected_labels))
-            model_name = str(request.data.get('model') or 'facebook/sam3')
+            model_name = str(
+                request.data.get('model')
+                or source_data.get('model')
+                or source_data.get('model_name')
+                or 'facebook/sam3'
+            )
             source = {
                 'kind': 'provider',
                 'provider': 'sam3',
